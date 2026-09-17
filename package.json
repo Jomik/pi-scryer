@@ -1,0 +1,46 @@
+{
+  "name": "pi-scryer",
+  "version": "0.1.0",
+  "packageManager": "npm@11.12.1",
+  "description": "Scaffold for a pi extension (in progress).",
+  "license": "MIT",
+  "author": "Jonas Damtoft",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jomik/pi-scryer.git"
+  },
+  "homepage": "https://github.com/Jomik/pi-scryer",
+  "keywords": [
+    "pi",
+    "agent",
+    "tools",
+    "scaffold"
+  ],
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "test": "vitest run --passWithNoTests"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
