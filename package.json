@@ -2,7 +2,7 @@
   "name": "pi-scryer",
   "version": "0.1.0",
   "packageManager": "npm@11.12.1",
-  "description": "Scaffold for a pi extension (in progress).",
+  "description": "Minimal Exa web access for pi.",
   "license": "MIT",
   "author": "Jonas Damtoft",
   "repository": {
@@ -14,7 +14,8 @@
     "pi",
     "agent",
     "tools",
-    "scaffold"
+    "exa",
+    "web"
   ],
   "type": "module",
   "files": [

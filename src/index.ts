@@ -41,11 +41,7 @@ function parseFirstResult(body: unknown): ExaContentResult {
   if (Array.isArray(statuses)) {
     for (const entry of statuses) {
       if (isRecord(entry) && entry.status === "error") {
-        const errorRecord = isRecord(entry.error) ? entry.error : undefined;
-        const tag = errorRecord && isNonEmptyString(errorRecord.tag) ? errorRecord.tag.trim() : undefined;
-        throw new Error(
-          tag ? `web_read: Exa could not retrieve this URL (${tag})` : "web_read: Exa could not retrieve this URL",
-        );
+        throw new Error("web_read: Exa could not retrieve this URL");
       }
     }
   }

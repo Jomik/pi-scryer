@@ -202,7 +202,7 @@ describe("web_read extension", () => {
       caught = err;
     }
 
-    expect(String(caught)).toContain("Exa could not retrieve this URL (CRAWL_TIMEOUT)");
+    expect(String(caught)).toContain("Exa could not retrieve this URL");
     expect(String(caught)).not.toContain(SECRET_KEY);
   });
 
