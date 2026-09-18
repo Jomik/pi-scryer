@@ -143,7 +143,9 @@ function parseSearchResults(body: unknown): { results: ExaSearchResult[]; omitte
       continue;
     }
     const rawTitle = entry.title;
-    const title = isNonEmptyString(rawTitle) ? rawTitle.trim().slice(0, SEARCH_TITLE_MAX_CHARS) : url;
+    const title = isNonEmptyString(rawTitle)
+      ? rawTitle.trim().slice(0, SEARCH_TITLE_MAX_CHARS)
+      : url.slice(0, SEARCH_TITLE_MAX_CHARS);
     const rawText = entry.text;
     const text = isNonEmptyString(rawText) ? rawText.trim().slice(0, SEARCH_EXCERPT_MAX_CHARS) : undefined;
     valid.push({ title, url, text });

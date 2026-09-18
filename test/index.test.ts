@@ -599,20 +599,23 @@ describe("web_search extension", () => {
     expect(text).not.toContain("E".repeat(501));
   });
 
-  it("falls back to the URL as title when title is missing, and rejects URLs over 2048 chars", async () => {
+  it("falls back to a truncated URL as title when title is missing, and rejects URLs over 2048 chars", async () => {
     const tool = getRegisteredTool("web_search");
+    const longUrl = `https://example.com/${"a".repeat(300)}`;
     const overlongUrl = `https://example.com/${"a".repeat(2048)}`;
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({
-        results: [{ url: "https://example.com/no-title" }, { title: "Too Long", url: overlongUrl }],
+        results: [{ url: longUrl }, { title: "Too Long", url: overlongUrl }],
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await tool.execute("call-1", { query: "example" }, new AbortController().signal, noop, {});
     const text = result.content[0].text;
+    const truncatedTitle = longUrl.slice(0, 200);
 
-    expect(text).toContain("Source: https://example.com/no-title");
+    expect(text.split("\n")[0]).toBe(`1. ${truncatedTitle}`);
+    expect(text).toContain(`Source: ${longUrl}`);
     expect(text).not.toContain(overlongUrl);
     expect(text).toContain("1 result omitted");
   });
