@@ -140,6 +140,12 @@ export default function activate(api: ExtensionAPI): void {
       try {
         body = await response.json();
       } catch {
+        if (signal?.aborted) {
+          throw new Error("web_read: request cancelled");
+        }
+        if (timeoutSignal.aborted) {
+          throw new Error("web_read: request timed out");
+        }
         throw new Error("web_read: malformed JSON response from content provider");
       }
 

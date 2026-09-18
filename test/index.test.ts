@@ -280,6 +280,70 @@ describe("web_read extension", () => {
     await assertion;
   });
 
+  it("propagates caller cancellation during JSON body parsing", async () => {
+    const tool = getRegisteredTool();
+    const controller = new AbortController();
+    let resolveJsonStarted: () => void;
+    const jsonStarted = new Promise<void>((resolve) => {
+      resolveJsonStarted = resolve;
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      const response = {
+        ok: true,
+        status: 200,
+        json: () => {
+          resolveJsonStarted();
+          return new Promise<unknown>((_resolve, reject) => {
+            controller.signal.addEventListener("abort", () => {
+              reject(new DOMException("Aborted", "AbortError"));
+            });
+          });
+        },
+      } as unknown as Response;
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = tool.execute("call-1", { url: "https://example.com/page" }, controller.signal, noop, {});
+    const assertion = expect(promise).rejects.toThrow("web_read: request cancelled");
+    await jsonStarted;
+    controller.abort();
+    await assertion;
+  });
+
+  it("times out during JSON body parsing", async () => {
+    const tool = getRegisteredTool();
+    const timeoutController = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    let resolveJsonStarted: () => void;
+    const jsonStarted = new Promise<void>((resolve) => {
+      resolveJsonStarted = resolve;
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      const response = {
+        ok: true,
+        status: 200,
+        json: () => {
+          resolveJsonStarted();
+          return new Promise<unknown>((_resolve, reject) => {
+            timeoutController.signal.addEventListener("abort", () => {
+              reject(new DOMException("Aborted", "AbortError"));
+            });
+          });
+        },
+      } as unknown as Response;
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
+    const assertion = expect(promise).rejects.toThrow("web_read: request timed out");
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    await jsonStarted;
+    timeoutController.abort();
+    await assertion;
+  });
+
   it("truncates oversized text with a source header and size note", async () => {
     const tool = getRegisteredTool();
     const longText = "x".repeat(DEFAULT_MAX_BYTES + 1000);
