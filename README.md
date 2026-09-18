@@ -1,7 +1,7 @@
 # pi-scryer
 
-Minimal Exa web access for [pi](https://github.com/earendil-works/pi). Currently provides
-`web_read` only.
+Minimal Exa web access for [pi](https://github.com/earendil-works/pi). Provides
+`web_read` and `web_search`.
 
 ## Installation
 
@@ -40,7 +40,16 @@ returns the title, resolved source, and extracted text.
 
 ### `web_search`
 
-Planned, not yet implemented.
+`web_search(query)` searches the web via Exa and returns up to 5 results as
+Markdown, each with a title, source URL, and a short excerpt (up to 500
+characters).
+
+- Fixed result count (5) and excerpt length; no pagination or batching.
+- Fixed 30s timeout, same credential and error handling as `web_read`.
+- Does not fetch full page content — call `web_read` on a returned source URL
+  to read the full page.
+- No retry, no fallback, and no direct local fetch — retrieval is always
+  performed via the Exa API.
 
 ## Development
 
