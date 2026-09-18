@@ -1,17 +1,50 @@
 # pi-scryer
 
-> **Scaffold / in progress.** This package is an early scaffold for a future [pi](https://github.com/earendil-works/pi)
-> extension. It currently registers a no-op extension and does not yet provide any tools. In particular, no
-> Exa-backed `web_search` or `web_read` tools exist yet — do not install this expecting working functionality.
+Minimal Exa web access for [pi](https://github.com/earendil-works/pi). Currently provides
+`web_read` only.
 
-## Status
+## Installation
 
-- Minimal npm/ESM package with a valid, empty pi extension entrypoint (`src/index.ts`).
-- No tools, commands, or configuration are implemented yet.
+```
+pi install npm:pi-scryer
+```
+
+## Trial
+
+Run without installing:
+
+```
+pi -e npm:pi-scryer
+```
+
+## Configuration
+
+Requires an Exa API key:
+
+```
+export EXA_API_KEY=...
+```
+
+## Tools
+
+### `web_read`
+
+`web_read(url)` fetches a URL's content using Exa's provider-side retrieval and
+returns the title, resolved source, and extracted text.
+
+- HTTP(S) URLs only.
+- Fixed 30s timeout.
+- Output limited to 50KB or 2000 lines, whichever is hit first.
+- No retry, no fallback, and no direct local page fetch — retrieval is always
+  performed via the Exa API.
+
+### `web_search`
+
+Planned, not yet implemented.
 
 ## Development
 
-```bash
+```
 npm install
 npm run lint
 npm run typecheck
