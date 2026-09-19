@@ -174,7 +174,7 @@ function parseSearchResults(body: unknown): { results: ExaSearchResult[]; omitte
       continue;
     }
     const rawTitle = entry.title;
-    const title = isNonEmptyString(rawTitle) ? rawTitle.trim().slice(0, SEARCH_TITLE_MAX_CHARS) : undefined;
+    const title = isNonEmptyString(rawTitle) ? truncateForDisplay(rawTitle, SEARCH_TITLE_MAX_CHARS) : undefined;
     const rawText = entry.text;
     const text = isNonEmptyString(rawText) ? rawText.trim().slice(0, SEARCH_EXCERPT_MAX_CHARS) : undefined;
     valid.push({ title, url, text });
@@ -311,7 +311,7 @@ export default function activate(api: ExtensionAPI): void {
           Type.Integer({
             minimum: 0,
             description:
-              "Character offset into the previously returned page text to continue reading from. Copy the exact nextOffset value from a prior web_read result; do not calculate it yourself. Omit or use 0 to fetch fresh content from the start.",
+              "Continuation offset into the previously returned page text to continue reading from. Copy the exact nextOffset value from a prior web_read result; do not calculate it yourself. Omit or use 0 to fetch fresh content from the start.",
           }),
         ),
       },
