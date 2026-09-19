@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import activate from "../src/index";
 
@@ -51,9 +52,9 @@ function createIdentityTheme(): FakeTheme {
 
 const LARGE_RENDER_WIDTH = 10_000;
 
-function renderText(component: RenderedText): string {
+function renderText(component: RenderedText, width: number = LARGE_RENDER_WIDTH): string {
   return component
-    .render(LARGE_RENDER_WIDTH)
+    .render(width)
     .map((line) => line.trimEnd())
     .join("\n");
 }
@@ -789,10 +790,10 @@ describe("web_read rendering", () => {
     const longUrl = `https://example.com/${"a".repeat(200)}`;
     const component = tool.renderCall?.({ url: longUrl }, theme, { expanded: false });
     expect(component).toBeDefined();
-    const rendered = renderText(component as RenderedText);
-    expect(rendered.split("\n").length).toBe(1);
-    expect(rendered.length).toBeLessThan(longUrl.length);
-    expect(rendered).toContain("…");
+    const rendered = renderText(component as RenderedText, 60);
+    const lines = rendered.split("\n");
+    expect(lines.length).toBe(1);
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(60);
   });
 
   it("renderCall shows the full URL when expanded", () => {
@@ -850,7 +851,10 @@ describe("web_read rendering", () => {
       theme,
       { isError: false },
     );
-    const rendered = renderText(component as RenderedText);
+    const rendered = renderText(component as RenderedText, 60);
+    const lines = rendered.split("\n");
+    expect(lines.length).toBe(1);
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(60);
     expect(rendered).toContain("Example Title");
     expect(rendered).toContain("https://example.com/page");
     expect(rendered).not.toContain("(truncated)");
@@ -889,10 +893,10 @@ describe("web_search rendering", () => {
     const tool = getRegisteredTool("web_search");
     const longQuery = "q".repeat(200);
     const component = tool.renderCall?.({ query: longQuery }, theme, { expanded: false });
-    const rendered = renderText(component as RenderedText);
-    expect(rendered.split("\n").length).toBe(1);
-    expect(rendered.length).toBeLessThan(longQuery.length);
-    expect(rendered).toContain("…");
+    const rendered = renderText(component as RenderedText, 60);
+    const lines = rendered.split("\n");
+    expect(lines.length).toBe(1);
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(60);
   });
 
   it("renderCall shows the full query when expanded", () => {
@@ -979,7 +983,10 @@ describe("web_search rendering", () => {
       theme,
       { isError: false },
     );
-    const rendered = renderText(component as RenderedText);
+    const rendered = renderText(component as RenderedText, 60);
+    const lines = rendered.split("\n");
+    expect(lines.length).toBe(1);
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(60);
     expect(rendered).toContain("3 results");
     expect(rendered).toContain("2 omitted");
     expect(rendered).toContain("(truncated)");

@@ -5,7 +5,7 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, TruncatedText } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
@@ -257,15 +257,18 @@ export default function activate(api: ExtensionAPI): void {
     renderCall(args, theme, context) {
       const title = theme.fg("toolTitle", theme.bold("web_read "));
       const url = typeof args?.url === "string" ? args.url : "";
-      const display = context.expanded ? url : truncateForDisplay(url, CALL_PREVIEW_MAX_CHARS);
-      return new Text(`${title}${theme.fg("accent", display)}`, 0, 0);
+      if (context.expanded) {
+        return new Text(`${title}${theme.fg("accent", url)}`, 0, 0);
+      }
+      const display = truncateForDisplay(url, CALL_PREVIEW_MAX_CHARS);
+      return new TruncatedText(`${title}${theme.fg("accent", display)}`, 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       if (isPartial) {
-        return new Text(theme.fg("dim", "Reading\u2026"), 0, 0);
+        return new TruncatedText(theme.fg("dim", "Reading\u2026"), 0, 0);
       }
       if (context.isError) {
-        return new Text(theme.fg("dim", "failed"), 0, 0);
+        return new TruncatedText(theme.fg("dim", "failed"), 0, 0);
       }
 
       const content = result.content[0];
@@ -277,7 +280,7 @@ export default function activate(api: ExtensionAPI): void {
 
       const details = result.details as WebReadToolDetails | undefined;
       if (!details) {
-        return new Text(theme.fg("muted", "done"), 0, 0);
+        return new TruncatedText(theme.fg("muted", "done"), 0, 0);
       }
 
       const base = details.title ? `${details.title} \u2014 ${details.source}` : details.source;
@@ -285,7 +288,7 @@ export default function activate(api: ExtensionAPI): void {
       if (details.truncated) {
         line += theme.fg("dim", " (truncated)");
       }
-      return new Text(line, 0, 0);
+      return new TruncatedText(line, 0, 0);
     },
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const rawUrl = typeof params?.url === "string" ? params.url.trim() : "";
@@ -346,15 +349,18 @@ export default function activate(api: ExtensionAPI): void {
     renderCall(args, theme, context) {
       const title = theme.fg("toolTitle", theme.bold("web_search "));
       const query = typeof args?.query === "string" ? args.query : "";
-      const display = context.expanded ? query : truncateForDisplay(query, CALL_PREVIEW_MAX_CHARS);
-      return new Text(`${title}${theme.fg("accent", display)}`, 0, 0);
+      if (context.expanded) {
+        return new Text(`${title}${theme.fg("accent", query)}`, 0, 0);
+      }
+      const display = truncateForDisplay(query, CALL_PREVIEW_MAX_CHARS);
+      return new TruncatedText(`${title}${theme.fg("accent", display)}`, 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       if (isPartial) {
-        return new Text(theme.fg("dim", "Searching\u2026"), 0, 0);
+        return new TruncatedText(theme.fg("dim", "Searching\u2026"), 0, 0);
       }
       if (context.isError) {
-        return new Text(theme.fg("dim", "failed"), 0, 0);
+        return new TruncatedText(theme.fg("dim", "failed"), 0, 0);
       }
 
       const content = result.content[0];
@@ -366,7 +372,7 @@ export default function activate(api: ExtensionAPI): void {
 
       const details = result.details as WebSearchToolDetails | undefined;
       if (!details) {
-        return new Text(theme.fg("muted", "done"), 0, 0);
+        return new TruncatedText(theme.fg("muted", "done"), 0, 0);
       }
 
       let summary =
@@ -383,7 +389,7 @@ export default function activate(api: ExtensionAPI): void {
       if (details.truncated) {
         line += theme.fg("dim", " (truncated)");
       }
-      return new Text(line, 0, 0);
+      return new TruncatedText(line, 0, 0);
     },
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const rawQuery = typeof params?.query === "string" ? params.query.trim() : "";
