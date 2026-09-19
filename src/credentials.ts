@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const KEYCHAIN_SERVICE = "pi-scryer";
 const KEYCHAIN_ACCOUNT = "exa-api-key";
+const COMMAND_USAGE = "/scryer login|logout|status";
+const PROMPT_TEXT = "Enter your Exa API key";
 
 export { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE };
 
@@ -170,4 +173,143 @@ export async function resolveExaApiKey(): Promise<string | undefined> {
   }
   const envKey = process.env.EXA_API_KEY?.trim();
   return envKey && envKey.length > 0 ? envKey : undefined;
+}
+
+function hasEnvKey(): boolean {
+  return Boolean(process.env.EXA_API_KEY?.trim());
+}
+
+/**
+ * Reports which source (if any) will supply the Exa API key, without ever
+ * reading or exposing the key's value. Keychain presence is checked first on
+ * macOS; only its existence (not its content) is queried.
+ */
+async function reportStatus(ctx: ExtensionCommandContext): Promise<void> {
+  if (isMacOS() && (await hasKeychainKey())) {
+    ctx.ui.notify("scryer: Exa API key source: Keychain", "info");
+    return;
+  }
+  if (hasEnvKey()) {
+    ctx.ui.notify("scryer: Exa API key source: environment (EXA_API_KEY)", "info");
+    return;
+  }
+  ctx.ui.notify("scryer: Exa API key source: missing", "info");
+}
+
+/**
+ * Interactively prompts for and stores an Exa API key in the macOS Keychain.
+ * Only available on macOS in the interactive TUI; every other case reports a
+ * fixed, sanitized guidance message and performs no subprocess.
+ */
+async function handleLogin(ctx: ExtensionCommandContext): Promise<void> {
+  if (!isMacOS() || ctx.mode !== "tui" || !ctx.hasUI) {
+    ctx.ui.notify(
+      "scryer: login requires the interactive macOS TUI; set the EXA_API_KEY environment variable instead",
+      "error",
+    );
+    return;
+  }
+
+  let entered: string | null;
+  try {
+    entered = await promptForApiKey(PROMPT_TEXT);
+  } catch {
+    ctx.ui.notify("scryer: failed to read the Exa API key", "error");
+    return;
+  }
+
+  if (entered === null) {
+    ctx.ui.notify("scryer: login cancelled", "info");
+    return;
+  }
+
+  const trimmed = entered.trim();
+  if (trimmed.length === 0) {
+    ctx.ui.notify("scryer: no Exa API key entered", "error");
+    return;
+  }
+
+  try {
+    await storeKeychainKey(trimmed);
+  } catch {
+    ctx.ui.notify("scryer: failed to store the Exa API key in Keychain", "error");
+    return;
+  }
+
+  ctx.ui.notify("scryer: Exa API key stored in Keychain", "info");
+}
+
+/**
+ * Idempotently removes the Exa API key from the macOS Keychain. Never
+ * touches the EXA_API_KEY environment variable; notifies when it remains as
+ * a fallback. Non-macOS platforms perform no subprocess.
+ */
+async function handleLogout(ctx: ExtensionCommandContext): Promise<void> {
+  if (!isMacOS()) {
+    ctx.ui.notify(
+      "scryer: Keychain is only available on macOS; unset EXA_API_KEY to remove the environment fallback",
+      "info",
+    );
+    return;
+  }
+
+  try {
+    await deleteKeychainKey();
+  } catch {
+    ctx.ui.notify("scryer: failed to remove the Exa API key from Keychain", "error");
+    return;
+  }
+
+  if (hasEnvKey()) {
+    ctx.ui.notify(
+      "scryer: removed from Keychain; EXA_API_KEY environment variable is still set and will be used",
+      "info",
+    );
+    return;
+  }
+  ctx.ui.notify("scryer: removed from Keychain", "info");
+}
+
+/**
+ * Handles the `/scryer` command. Accepts exactly the empty string, `status`,
+ * `login`, and `logout` (after trimming); anything else, including extra
+ * arguments to a known subcommand, shows the fixed usage message and
+ * performs no subprocess.
+ */
+export async function scryerCommandHandler(args: string, ctx: ExtensionCommandContext): Promise<void> {
+  const trimmed = args.trim();
+
+  if (trimmed.length === 0) {
+    await reportStatus(ctx);
+    ctx.ui.notify(COMMAND_USAGE, "info");
+    return;
+  }
+
+  if (trimmed === "status") {
+    await reportStatus(ctx);
+    return;
+  }
+
+  if (trimmed === "login") {
+    await handleLogin(ctx);
+    return;
+  }
+
+  if (trimmed === "logout") {
+    await handleLogout(ctx);
+    return;
+  }
+
+  ctx.ui.notify(COMMAND_USAGE, "warning");
+}
+
+/**
+ * Registers the `/scryer` command on the provided extension API, wiring the
+ * fixed command name, description, and handler.
+ */
+export function registerScryerCommand(api: ExtensionAPI): void {
+  api.registerCommand("scryer", {
+    description: "Manage the Exa API key used by pi-scryer (status, login, logout)",
+    handler: scryerCommandHandler,
+  });
 }

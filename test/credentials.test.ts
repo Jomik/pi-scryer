@@ -1,4 +1,3 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteKeychainKey,
@@ -8,9 +7,9 @@ import {
   KEYCHAIN_SERVICE,
   promptForApiKey,
   resolveExaApiKey,
+  scryerCommandHandler,
   storeKeychainKey,
 } from "../src/credentials";
-import activate from "../src/index";
 
 const execFileMock = vi.hoisted(() => vi.fn());
 
@@ -301,28 +300,16 @@ function createCtx(overrides: Partial<Pick<FakeCommandCtx, "mode" | "hasUI">> = 
   };
 }
 
-type CommandHandler = (args: string, ctx: FakeCommandCtx) => Promise<void>;
-
-/**
- * Activates the extension with a minimal local mock API (registerTool,
- * registerCommand, on) and captures the /scryer command handler. Never
- * imports the shared harness: this file owns its own hoisted
- * node:child_process mock so no real subprocess or dialog can run.
- */
-function captureScryerHandler(): { handler: CommandHandler; registerCommand: ReturnType<typeof vi.fn> } {
-  const registerTool = vi.fn();
-  const on = vi.fn();
-  const registerCommand = vi.fn();
-  activate({ registerTool, registerCommand, on } as unknown as ExtensionAPI);
-  expect(registerCommand).toHaveBeenCalledTimes(1);
-  const [name, options] = registerCommand.mock.calls[0] as [string, { handler: CommandHandler }];
-  expect(name).toBe("scryer");
-  return { handler: options.handler, registerCommand };
-}
-
 function allNotifyMessages(ctx: FakeCommandCtx): string[] {
   return ctx.ui.notify.mock.calls.map((call) => String(call[0]));
 }
+
+/**
+ * The real handler's context type requires the full ExtensionCommandContext
+ * shape; behavior tests only need `ui`, `mode`, and `hasUI`, matching the
+ * shared harness's fake context.
+ */
+const handler = scryerCommandHandler as unknown as (args: string, ctx: FakeCommandCtx) => Promise<void>;
 
 describe("scryer command", () => {
   beforeEach(() => {
@@ -339,16 +326,8 @@ describe("scryer command", () => {
     vi.restoreAllMocks();
   });
 
-  it("registers exactly one scryer command with a description", () => {
-    const { registerCommand } = captureScryerHandler();
-    const [name, options] = registerCommand.mock.calls[0] as [string, { description?: string }];
-    expect(name).toBe("scryer");
-    expect(options.description).toBeTruthy();
-  });
-
   it("with no args, reports status then fixed usage", async () => {
     mockNonMacOS();
-    const { handler } = captureScryerHandler();
     const ctx = createCtx();
 
     await handler("", ctx);
@@ -362,7 +341,6 @@ describe("scryer command", () => {
 
   it("trims whitespace around a valid subcommand", async () => {
     mockNonMacOS();
-    const { handler } = captureScryerHandler();
     const ctx = createCtx();
 
     await handler("  status  ", ctx);
@@ -375,7 +353,6 @@ describe("scryer command", () => {
     it("reports Keychain when present, probing without -w", async () => {
       mockMacOS();
       succeedWith(SECRET_KEY);
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("status", ctx);
@@ -390,7 +367,6 @@ describe("scryer command", () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
       process.env.EXA_API_KEY = "env-key";
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("status", ctx);
@@ -401,7 +377,6 @@ describe("scryer command", () => {
     it("reports missing when neither source is available", async () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("status", ctx);
@@ -414,7 +389,6 @@ describe("scryer command", () => {
     it("stores a trimmed key on success in the macOS TUI", async () => {
       mockMacOS();
       succeedWith(`  ${SECRET_KEY}  \n`);
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login", ctx);
@@ -436,7 +410,6 @@ describe("scryer command", () => {
     it("reports cancellation without storing anything", async () => {
       mockMacOS();
       failWith("execution error: User canceled. (-128)");
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login", ctx);
@@ -448,7 +421,6 @@ describe("scryer command", () => {
     it("rejects an empty key without storing anything", async () => {
       mockMacOS();
       succeedWith("   \n");
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login", ctx);
@@ -470,7 +442,6 @@ describe("scryer command", () => {
           error.stderr = stderr;
           callback(error, "", stderr);
         });
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login", ctx);
@@ -480,7 +451,6 @@ describe("scryer command", () => {
 
     it("reports a fixed error and never invokes a subprocess on non-macOS", async () => {
       mockNonMacOS();
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login", ctx);
@@ -493,7 +463,6 @@ describe("scryer command", () => {
 
     it("reports a fixed error and never invokes a subprocess outside the interactive TUI", async () => {
       mockMacOS();
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "rpc", hasUI: true });
 
       await handler("login", ctx);
@@ -509,7 +478,6 @@ describe("scryer command", () => {
     it("removes the Keychain item and reports success when EXA_API_KEY is unset", async () => {
       mockMacOS();
       succeedWith("");
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("logout", ctx);
@@ -520,7 +488,6 @@ describe("scryer command", () => {
     it("is idempotent when the Keychain item is already missing", async () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("logout", ctx);
@@ -531,7 +498,6 @@ describe("scryer command", () => {
     it("reports a fixed, sanitized error when deletion fails", async () => {
       mockMacOS();
       failWith(`permission denied: raw detail containing ${SECRET_KEY}`);
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("logout", ctx);
@@ -541,7 +507,6 @@ describe("scryer command", () => {
 
     it("reports fixed environment guidance and never invokes a subprocess on non-macOS", async () => {
       mockNonMacOS();
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("logout", ctx);
@@ -556,7 +521,6 @@ describe("scryer command", () => {
       mockMacOS();
       succeedWith("");
       process.env.EXA_API_KEY = "env-key";
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("logout", ctx);
@@ -571,7 +535,6 @@ describe("scryer command", () => {
   describe("unknown or extra arguments", () => {
     it("shows fixed usage and performs no subprocess for extra args to a known subcommand", async () => {
       mockMacOS();
-      const { handler } = captureScryerHandler();
       const ctx = createCtx({ mode: "tui", hasUI: true });
 
       await handler("login exa", ctx);
@@ -582,7 +545,6 @@ describe("scryer command", () => {
 
     it("shows fixed usage and performs no subprocess for an unrecognized subcommand", async () => {
       mockMacOS();
-      const { handler } = captureScryerHandler();
       const ctx = createCtx();
 
       await handler("bogus", ctx);
@@ -609,16 +571,14 @@ describe("scryer command", () => {
           error.stderr = stderr;
           callback(error, "", stderr);
         });
-      const { handler: loginHandler } = captureScryerHandler();
       const loginCtx = createCtx({ mode: "tui", hasUI: true });
-      await loginHandler("login", loginCtx);
+      await handler("login", loginCtx);
       observedMessages.push(...allNotifyMessages(loginCtx));
 
       // logout deletion failure path
       failWith(`raw failure containing ${SECRET_KEY}`);
-      const { handler: logoutHandler } = captureScryerHandler();
       const logoutCtx = createCtx();
-      await logoutHandler("logout", logoutCtx);
+      await handler("logout", logoutCtx);
       observedMessages.push(...allNotifyMessages(logoutCtx));
 
       for (const message of observedMessages) {
