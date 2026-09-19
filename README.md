@@ -40,8 +40,9 @@ included only when Exa provides one.
   call, the response ends with a marker stating the current offset, the exact
   next offset, the total text length, and the call to make next, e.g.
   `web_read(url, offset: N)`. Pass that exact `N` back as `offset` to fetch
-  the next chunk — do not compute your own offset. The final chunk has no
-  continuation marker.
+  the next chunk — do not compute your own offset. Offsets are exact
+  positions into the previously returned page text; copy them verbatim. The
+  final chunk has no continuation marker.
 - Omitting `offset` (or passing `0`) always fetches the page fresh from Exa.
 - The extension keeps a single process-local cache entry of the most
   recently fetched page. A continuation call (`offset > 0`) reuses that cache

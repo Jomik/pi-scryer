@@ -809,7 +809,7 @@ describe("web_read extension", () => {
       const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
       const text = result.content[0].text;
       expect(text).not.toContain("\uFFFD");
-      const markerIndex = text.indexOf("\n\n[Showing chars");
+      const markerIndex = text.indexOf("\n\n[Showing offsets");
       const body = markerIndex >= 0 ? text.slice(header.length, markerIndex) : text.slice(header.length);
       reconstructed += body;
       const details = result.details as WebReadToolDetails;
@@ -850,6 +850,100 @@ describe("web_read extension", () => {
       }
       offset = details.nextOffset;
     }
+  });
+
+  it("chunks a large single-line unicode page via byte-safe prefixes, always making progress", async () => {
+    const tool = getRegisteredTool("web_read");
+    const segment = "abcdefghij\u{1F600}\u{1F389}\u{1F44D}klmnopqrst";
+    const segmentBytes = Buffer.byteLength(segment, "utf-8");
+    const repeatCount = Math.ceil((DEFAULT_MAX_BYTES * 2) / segmentBytes);
+    const longText = segment.repeat(repeatCount);
+    expect(Buffer.byteLength(longText, "utf-8")).toBeGreaterThan(DEFAULT_MAX_BYTES);
+    expect(longText).not.toContain("\n");
+
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const header = "# Example\nSource: https://resolved.example/page\n\n";
+    let offset: number | undefined;
+    let previousOffset = -1;
+    let reconstructed = "";
+    for (let iterations = 0; ; iterations++) {
+      if (iterations > 50) {
+        throw new Error("too many iterations");
+      }
+      const params: Record<string, unknown> = { url: "https://example.com/page" };
+      if (offset !== undefined) {
+        params.offset = offset;
+      }
+      const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
+      const text = result.content[0].text;
+      expect(text).not.toContain("\uFFFD");
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+      expect(text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
+
+      const markerIndex = text.indexOf("\n\n[Showing offsets");
+      const body = markerIndex >= 0 ? text.slice(header.length, markerIndex) : text.slice(header.length);
+      reconstructed += body;
+
+      const details = result.details as WebReadToolDetails;
+      const currentOffset = offset ?? 0;
+      expect(details.offset).toBe(currentOffset);
+      if (!details.truncated) {
+        break;
+      }
+      expect(details.nextOffset).toBeGreaterThan(currentOffset);
+      expect(details.nextOffset).toBeGreaterThan(previousOffset);
+      previousOffset = details.nextOffset as number;
+      offset = details.nextOffset;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(reconstructed).toBe(longText);
+  });
+
+  it("normalizes and caps an oversized provider title before output/cache", async () => {
+    const tool = getRegisteredTool("web_read");
+    const rawTitle = `Title\nwith  extra   whitespace ${"T".repeat(60_000)}`;
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: rawTitle, url: "https://resolved.example/page", text: "Short body text" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const text = result.content[0].text;
+    const details = result.details as WebReadToolDetails;
+
+    expect(details.title).toBeDefined();
+    expect(details.title?.length).toBeLessThanOrEqual(200);
+    expect(details.title).not.toContain("\n");
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    expect(text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
+  });
+
+  it("rejects an oversized resolved result URL with a fixed error", async () => {
+    const tool = getRegisteredTool("web_read");
+    const oversizedUrl = `https://resolved.example/${"a".repeat(2048)}`;
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: "Example", url: oversizedUrl, text: "Some body text" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: content provider returned an oversized result URL");
   });
 });
 

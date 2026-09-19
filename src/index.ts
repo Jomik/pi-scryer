@@ -219,7 +219,27 @@ function buildSearchMarkdown(results: ExaSearchResult[], omitted: number): strin
  * total extracted text length, without repeating the source URL.
  */
 function buildOffsetMarker(offset: number, nextOffset: number, totalLength: number): string {
-  return `\n\n[Showing chars ${offset}-${nextOffset - 1} of ${totalLength}. Continue with web_read(url, offset: ${nextOffset})]`;
+  return `\n\n[Showing offsets ${offset}-${nextOffset - 1} of ${totalLength}. Continue with web_read(url, offset: ${nextOffset})]`;
+}
+
+/**
+ * Takes the largest prefix of `text` whose UTF-8 byte size fits within
+ * `maxBytes`, walking whole Unicode code points (never splitting a surrogate
+ * pair). Used only for the rare case where a single line exceeds the byte
+ * budget and truncateHead cannot return any content for it.
+ */
+function takeUtf8BytePrefix(text: string, maxBytes: number): string {
+  let usedBytes = 0;
+  let result = "";
+  for (const codePoint of text) {
+    const codePointBytes = Buffer.byteLength(codePoint, "utf-8");
+    if (usedBytes + codePointBytes > maxBytes) {
+      break;
+    }
+    result += codePoint;
+    usedBytes += codePointBytes;
+  }
+  return result;
 }
 
 /**
@@ -261,9 +281,13 @@ function parseFirstResult(body: unknown): ExaContentResult {
   if (!isNonEmptyString(url) || !isHttpUrl(url.trim())) {
     throw new Error("web_read: content provider returned an invalid result URL");
   }
+  const resolvedUrl = url.trim();
+  if (resolvedUrl.length > SEARCH_URL_MAX_CHARS) {
+    throw new Error("web_read: content provider returned an oversized result URL");
+  }
   return {
-    title: isNonEmptyString(title) ? title.trim() : undefined,
-    url: url.trim(),
+    title: isNonEmptyString(title) ? truncateForDisplay(title, SEARCH_TITLE_MAX_CHARS) : undefined,
+    url: resolvedUrl,
     text: text.trim(),
   };
 }
@@ -381,10 +405,18 @@ export default function activate(api: ExtensionAPI): void {
         maxBytes: availableMaxBytes,
       });
 
-      const nextOffset = offset + truncated.content.length;
-      const hasMore = truncated.truncated;
+      let chunkContent = truncated.content;
+      if (truncated.truncated && truncated.content.length === 0) {
+        chunkContent = takeUtf8BytePrefix(remainingText, availableMaxBytes);
+        if (chunkContent.length === 0) {
+          throw new Error("web_read: page content cannot be chunked");
+        }
+      }
 
-      let resultText = header + truncated.content;
+      const nextOffset = offset + chunkContent.length;
+      const hasMore = nextOffset < result.text.length;
+
+      let resultText = header + chunkContent;
       if (hasMore) {
         resultText += buildOffsetMarker(offset, nextOffset, result.text.length);
       }
