@@ -1292,6 +1292,136 @@ describe("web_read extension", () => {
       tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
     ).rejects.toThrow("web_read: content provider returned an oversized result URL");
   });
+
+  it("returns a valid chunk when cache initialization fails, then re-fetches and successfully caches once the environment is restored, leaving no .tmp files", async () => {
+    const originalTmpdir = process.env.TMPDIR;
+    const invalidTmpdir = join(
+      tmpdir(),
+      `pi-scryer-invalid-tmpdir-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      process.env.TMPDIR = invalidTmpdir;
+
+      const tool = getRegisteredTool("web_read");
+      const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse({
+          results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Cache initialization fails (invalid TMPDIR), but the read itself must
+      // still succeed with a valid chunk/nextOffset; the failed cache write is
+      // swallowed as best-effort.
+      const first = await tool.execute(
+        "call-1",
+        { url: "https://example.com/page" },
+        new AbortController().signal,
+        noop,
+        {},
+      );
+      const details = first.details as WebReadToolDetails;
+      expect(details.truncated).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      if (originalTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpdir;
+      }
+
+      // No cache entry exists (write failed), so this must re-fetch rather
+      // than reuse a permanently rejected cache-dir promise.
+      const second = await tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: details.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      );
+      const detailsSecond = second.details as WebReadToolDetails;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(detailsSecond.truncated).toBe(true);
+
+      // The environment is restored, so this fetch's result should now be
+      // cached successfully; the next continuation must hit the cache.
+      await tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: detailsSecond.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const dirs = await listCacheDirNames();
+      for (const name of dirs) {
+        const entries = await readdir(join(tmpdir(), name));
+        expect(entries.filter((entry) => entry.endsWith(".tmp")).length).toBe(0);
+      }
+    } finally {
+      if (originalTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpdir;
+      }
+    }
+  });
+
+  it("treats a cached file with valid JSON but invalid metadata (non-http/oversized URL, newline/oversized title) as a cache miss and returns freshly normalized metadata", async () => {
+    const before = await listCacheDirNames();
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const details = first.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const after = await listCacheDirNames();
+    const newDirs = after.filter((name) => !before.includes(name));
+    expect(newDirs.length).toBe(1);
+    const cacheDirPath = join(tmpdir(), newDirs[0]);
+    const files = (await readdir(cacheDirPath)).filter((name) => name.endsWith(".json"));
+    expect(files.length).toBe(1);
+    const filePath = join(cacheDirPath, files[0]);
+
+    // Valid JSON, but invalid metadata: non-http URL and an oversized,
+    // multi-line title.
+    const invalidPayload = JSON.stringify({
+      title: `Bad\nTitle ${"x".repeat(5000)}`,
+      url: "ftp://not-http.example/page",
+      text: "stale cached text",
+    });
+    await writeFile(filePath, invalidPayload);
+
+    const second = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: details.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const detailsSecond = second.details as WebReadToolDetails;
+    expect(detailsSecond.title).toBe("Example");
+    expect(second.content[0].text).not.toContain("stale cached text");
+
+    // The corrupt cache file was removed rather than left behind.
+    await expect(stat(filePath)).rejects.toThrow();
+  });
 });
 
 describe("web_search extension", () => {

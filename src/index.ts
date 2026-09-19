@@ -76,17 +76,36 @@ interface ExaContentResult {
   text: string;
 }
 
-function isCachedExaContentResult(value: unknown): value is ExaContentResult {
+/**
+ * Parses and normalizes a cached JSON value with the same validity rules
+ * applied to a fresh Exa result (non-empty trimmed text, absolute http(s)
+ * resolved URL within the size limit, optional title normalized/capped).
+ * Returns undefined for any corrupt or invalid cache entry so callers treat
+ * it as a cache miss.
+ */
+function parseCachedExaContentResult(value: unknown): ExaContentResult | undefined {
   if (!isRecord(value)) {
-    return false;
+    return undefined;
   }
-  if (!isNonEmptyString(value.url) || !isNonEmptyString(value.text)) {
-    return false;
+  const { url, text, title } = value;
+  if (!isNonEmptyString(text)) {
+    return undefined;
   }
-  if (value.title !== undefined && typeof value.title !== "string") {
-    return false;
+  if (!isNonEmptyString(url) || !isHttpUrl(url.trim())) {
+    return undefined;
   }
-  return true;
+  const resolvedUrl = url.trim();
+  if (resolvedUrl.length > SEARCH_URL_MAX_CHARS) {
+    return undefined;
+  }
+  if (title !== undefined && typeof title !== "string") {
+    return undefined;
+  }
+  return {
+    title: isNonEmptyString(title) ? truncateForDisplay(title, SEARCH_TITLE_MAX_CHARS) : undefined,
+    url: resolvedUrl,
+    text: text.trim(),
+  };
 }
 
 interface ExaSearchResult {
@@ -340,10 +359,19 @@ export default function activate(api: ExtensionAPI): void {
     }
     if (!cacheDirPromise) {
       cacheDirPromise = (async () => {
-        const dir = await mkdtemp(join(tmpdir(), CACHE_DIR_PREFIX));
-        await chmod(dir, 0o700);
-        cacheDir = dir;
-        return dir;
+        let dir: string | undefined;
+        try {
+          dir = await mkdtemp(join(tmpdir(), CACHE_DIR_PREFIX));
+          await chmod(dir, 0o700);
+          cacheDir = dir;
+          return dir;
+        } catch (err) {
+          cacheDirPromise = undefined;
+          if (dir) {
+            await rm(dir, { recursive: true, force: true }).catch(() => {});
+          }
+          throw err;
+        }
       })();
     }
     return cacheDirPromise;
@@ -358,13 +386,14 @@ export default function activate(api: ExtensionAPI): void {
       try {
         const raw = await readFile(entry.file, "utf-8");
         const parsed: unknown = JSON.parse(raw);
-        if (!isCachedExaContentResult(parsed)) {
+        const normalized = parseCachedExaContentResult(parsed);
+        if (!normalized) {
           throw new Error("invalid cache entry");
         }
         // Refresh LRU order on cache hit.
         cacheEntries.delete(normalizedUrl);
         cacheEntries.set(normalizedUrl, entry);
-        return parsed;
+        return normalized;
       } catch {
         cacheEntries.delete(normalizedUrl);
         await rm(entry.file, { force: true }).catch(() => {});
@@ -381,8 +410,13 @@ export default function activate(api: ExtensionAPI): void {
       const finalPath = join(dir, `${hash}-${suffix}.json`);
       const tmpPath = `${finalPath}.tmp`;
       const payload: ExaContentResult = { title: result.title, url: result.url, text: result.text };
-      await writeFile(tmpPath, JSON.stringify(payload), { mode: 0o600 });
-      await rename(tmpPath, finalPath);
+      try {
+        await writeFile(tmpPath, JSON.stringify(payload), { mode: 0o600 });
+        await rename(tmpPath, finalPath);
+      } catch (err) {
+        await rm(tmpPath, { force: true }).catch(() => {});
+        throw err;
+      }
 
       const previous = cacheEntries.get(normalizedUrl);
       cacheEntries.delete(normalizedUrl);
@@ -568,10 +602,10 @@ export default function activate(api: ExtensionAPI): void {
 
       if (hasMore) {
         if (!servedFromCache) {
-          await writeCachedResult(normalizedUrl, result);
+          await writeCachedResult(normalizedUrl, result).catch(() => {});
         }
       } else {
-        await deleteCachedResult(normalizedUrl);
+        await deleteCachedResult(normalizedUrl).catch(() => {});
       }
 
       return {
