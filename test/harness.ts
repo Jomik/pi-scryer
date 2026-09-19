@@ -4,6 +4,34 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, vi } from "vitest";
 import activate from "../src/index";
 
+// Hoisted mock for node:child_process.execFile. Default behavior simulates a
+// missing macOS Keychain item (as `security` reports it), so every existing
+// tool test that relies on the EXA_API_KEY env fallback stays deterministic
+// and never touches the real Keychain. Individual credential tests may
+// override the implementation per-case; the top-level afterEach below
+// restores this default so state never leaks between tests.
+type ExecFileCallback = (
+  error: (Error & { stdout?: string; stderr?: string }) | null,
+  stdout: string,
+  stderr: string,
+) => void;
+
+function defaultExecFileImplementation(_file: string, _args: readonly string[], callback: ExecFileCallback): void {
+  const error = new Error("item not found") as Error & { stdout?: string; stderr?: string };
+  const stderr = "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.";
+  error.stdout = "";
+  error.stderr = stderr;
+  callback(error, "", stderr);
+}
+
+const execFileMockRef = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  execFile: execFileMockRef,
+}));
+
+export const execFileMock = execFileMockRef;
+
 export interface WebReadToolDetails {
   title?: string;
   source: string;
@@ -106,7 +134,11 @@ afterEach(async () => {
   for (const handler of handlers) {
     await handler({ type: "session_shutdown", reason: "quit" }, {});
   }
+  execFileMock.mockReset();
+  execFileMock.mockImplementation(defaultExecFileImplementation);
 });
+
+execFileMock.mockImplementation(defaultExecFileImplementation);
 
 export async function listCacheDirNames(): Promise<string[]> {
   const entries = await readdir(tmpdir());

@@ -1,3 +1,5 @@
+import { resolveExaApiKey } from "./credentials";
+
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -81,13 +83,15 @@ export async function callExaApi(
   payload: unknown,
   signal: AbortSignal | undefined,
 ): Promise<unknown> {
-  const apiKey = process.env.EXA_API_KEY?.trim();
-  if (!isNonEmptyString(apiKey)) {
-    throw new Error(`${toolPrefix}: missing EXA_API_KEY`);
-  }
-
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const composedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
+  const apiKey = await resolveExaApiKey();
+  if (!isNonEmptyString(apiKey)) {
+    throw new Error(
+      `${toolPrefix}: missing EXA_API_KEY (run \`/scryer login\` on macOS, or set the EXA_API_KEY environment variable)`,
+    );
+  }
 
   let response: Response;
   try {
