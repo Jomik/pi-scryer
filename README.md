@@ -43,12 +43,19 @@ included only when Exa provides one.
   the next chunk — do not compute your own offset. Offsets are exact
   positions into the previously returned page text; copy them verbatim. The
   final chunk has no continuation marker.
-- Omitting `offset` (or passing `0`) always fetches the page fresh from Exa.
-- The extension keeps a single process-local cache entry of the most
-  recently fetched page. A continuation call (`offset > 0`) reuses that cache
-  only when it targets the same URL as the cached fetch; otherwise (a
-  different URL, an evicted entry, or a fresh process) it re-fetches via Exa
-  before applying the offset.
+- Omitting `offset` (or passing `0`) always fetches the page fresh from Exa,
+  atomically replacing (or removing, if the fresh page fits in one call) that
+  URL's cache entry.
+- The extension caches up to 5 pages' continuation state in a private,
+  per-process temp directory (not shared between agents or processes). A
+  continuation call (`offset > 0`) reuses a cached entry only when it targets
+  the same URL as a cached fetch; otherwise (a different URL, a corrupted or
+  missing cache file, an evicted entry, or a fresh process) it re-fetches via
+  Exa before applying the offset. The 6th distinct page evicts the
+  least-recently-used cached entry; reading a cached entry refreshes it.
+  Finishing a page (reaching its last chunk) removes its cache entry. The
+  cache directory is cleaned up on graceful shutdown and is otherwise
+  abandoned to OS temp-directory cleanup if the process crashes.
 - No retry, no fallback, and no direct local page fetch — retrieval is always
   performed via the Exa API.
 

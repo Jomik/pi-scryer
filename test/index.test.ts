@@ -1,3 +1,6 @@
+import { readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -90,13 +93,59 @@ interface RegisteredTool {
 
 const ORIGINAL_ENV = process.env.EXA_API_KEY;
 const SECRET_KEY = "secret-test-key";
+const CACHE_DIR_PREFIX = "pi-scryer-";
 
-function getRegisteredTools(): RegisteredTool[] {
+type ShutdownHandler = (event: unknown, ctx: unknown) => Promise<void> | void;
+
+// Global registry of session_shutdown handlers captured from every activate()
+// call in this file. A top-level afterEach drains and invokes them so no test
+// leaves a private cache temp directory behind, regardless of which describe
+// block or assertion path it took.
+let capturedShutdownHandlers: ShutdownHandler[] = [];
+
+afterEach(async () => {
+  const handlers = capturedShutdownHandlers;
+  capturedShutdownHandlers = [];
+  for (const handler of handlers) {
+    await handler({ type: "session_shutdown", reason: "quit" }, {});
+  }
+});
+
+async function listCacheDirNames(): Promise<string[]> {
+  const entries = await readdir(tmpdir());
+  return entries.filter((entry) => entry.startsWith(CACHE_DIR_PREFIX));
+}
+
+interface Activation {
+  tools: RegisteredTool[];
+  /** Invokes every session_shutdown handler registered by this activation. */
+  shutdown: () => Promise<void>;
+}
+
+function activateExtension(): Activation {
   const registerTool = vi.fn<(tool: RegisteredTool) => void>();
-  const api = { registerTool } as unknown as ExtensionAPI;
+  const shutdownHandlers: ShutdownHandler[] = [];
+  const on = vi.fn((event: string, handler: ShutdownHandler) => {
+    if (event === "session_shutdown") {
+      shutdownHandlers.push(handler);
+    }
+  });
+  const api = { registerTool, on } as unknown as ExtensionAPI;
   activate(api);
   expect(registerTool).toHaveBeenCalledTimes(2);
-  return registerTool.mock.calls.map((call) => call[0]);
+  capturedShutdownHandlers.push(...shutdownHandlers);
+  return {
+    tools: registerTool.mock.calls.map((call) => call[0]),
+    shutdown: async () => {
+      for (const handler of shutdownHandlers) {
+        await handler({ type: "session_shutdown", reason: "quit" }, {});
+      }
+    },
+  };
+}
+
+function getRegisteredTools(): RegisteredTool[] {
+  return activateExtension().tools;
 }
 
 function getRegisteredTool(name: string): RegisteredTool {
@@ -105,6 +154,16 @@ function getRegisteredTool(name: string): RegisteredTool {
     throw new Error(`tool ${name} was not registered`);
   }
   return tool;
+}
+
+/** Like getRegisteredTool, but also exposes a way to invoke this activation's captured session_shutdown handler directly. */
+function getRegisteredToolWithShutdown(name: string): { tool: RegisteredTool; shutdown: () => Promise<void> } {
+  const { tools, shutdown } = activateExtension();
+  const tool = tools.find((candidate) => candidate.name === name);
+  if (!tool) {
+    throw new Error(`tool ${name} was not registered`);
+  }
+  return { tool, shutdown };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -661,7 +720,7 @@ describe("web_read extension", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("replaces the one-entry cache on a fresh read, evicting the prior continuation", async () => {
+  it("keeps two different long pages independently continuable without re-fetching, even after concurrent initial reads", async () => {
     const tool = getRegisteredTool("web_read");
     const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
     const longTextB = Array.from({ length: 5000 }, (_, i) => `b-line ${i}`).join("\n");
@@ -673,17 +732,12 @@ describe("web_read extension", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const firstA = await tool.execute(
-      "call-1",
-      { url: "https://example.com/page-a" },
-      new AbortController().signal,
-      noop,
-      {},
-    );
+    const [firstA, firstB] = await Promise.all([
+      tool.execute("call-1", { url: "https://example.com/page-a" }, new AbortController().signal, noop, {}),
+      tool.execute("call-1", { url: "https://example.com/page-b" }, new AbortController().signal, noop, {}),
+    ]);
     const detailsA = firstA.details as WebReadToolDetails;
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    await tool.execute("call-1", { url: "https://example.com/page-b" }, new AbortController().signal, noop, {});
+    const detailsB = firstB.details as WebReadToolDetails;
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     await tool.execute(
@@ -693,7 +747,16 @@ describe("web_read extension", () => {
       noop,
       {},
     );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-b", offset: detailsB.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not cache a short, complete read", async () => {
@@ -764,6 +827,290 @@ describe("web_read extension", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect((continuedA.details as WebReadToolDetails).offset).toBe(detailsA.nextOffset);
+  });
+
+  it("evicts the least-recently-used cached page when a sixth long page is cached, and refreshes entries accessed first", async () => {
+    const tool = getRegisteredTool("web_read");
+    const pageText = (label: string) => Array.from({ length: 5000 }, (_, i) => `${label}-line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      const label = url.match(/page-(\d+)/)?.[1] ?? "x";
+      return jsonResponse({ results: [{ title: "Example", url, text: pageText(label) }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const nextOffsets = new Map<string, number>();
+    for (let i = 0; i < 5; i++) {
+      const url = `https://example.com/page-${i}`;
+      const result = await tool.execute("call-1", { url }, new AbortController().signal, noop, {});
+      nextOffsets.set(url, (result.details as WebReadToolDetails).nextOffset as number);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    // Access page-0's continuation before inserting a sixth page: this is a
+    // cache hit (no extra fetch) that must refresh its LRU position.
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-0", offset: nextOffsets.get("https://example.com/page-0") },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    // Insert a sixth page: this must evict the least-recently-used entry,
+    // which is page-1 (page-0 was just refreshed ahead of it).
+    const sixthUrl = "https://example.com/page-5";
+    const sixth = await tool.execute("call-1", { url: sixthUrl }, new AbortController().signal, noop, {});
+    nextOffsets.set(sixthUrl, (sixth.details as WebReadToolDetails).nextOffset as number);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    // The other five entries remain cached and do not trigger extra fetches.
+    // Checked before touching page-1 below, since re-caching an evicted entry
+    // would itself evict another (now-oldest) entry as a side effect.
+    for (const url of [
+      "https://example.com/page-0",
+      "https://example.com/page-2",
+      "https://example.com/page-3",
+      "https://example.com/page-4",
+      sixthUrl,
+    ]) {
+      await tool.execute("call-1", { url, offset: nextOffsets.get(url) }, new AbortController().signal, noop, {});
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    // page-1 was evicted: continuing it must re-fetch.
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-1", offset: nextOffsets.get("https://example.com/page-1") },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("deletes only the finished URL's cache entry on the final chunk, leaving another cached page usable", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
+    const longTextB = Array.from({ length: 5000 }, (_, i) => `b-line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      const text = url.includes("page-a") ? longTextA : longTextB;
+      return jsonResponse({ results: [{ title: "Example", url, text }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    let offsetA: number | undefined;
+    let truncatedA = true;
+    for (let iterations = 0; truncatedA; iterations++) {
+      if (iterations > 20) {
+        throw new Error("too many iterations");
+      }
+      const params: Record<string, unknown> = { url: "https://example.com/page-a" };
+      if (offsetA !== undefined) {
+        params.offset = offsetA;
+      }
+      const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
+      const details = result.details as WebReadToolDetails;
+      truncatedA = details.truncated;
+      offsetA = details.nextOffset;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const firstB = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-b" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const detailsB = firstB.details as WebReadToolDetails;
+    expect(detailsB.truncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-b", offset: detailsB.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Page A finished on its final chunk above, so its cache entry was
+    // deleted; continuing it again must re-fetch, while page B stays cached.
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a", offset: 1 },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("falls back to Exa and re-fetches when the cached file is deleted from disk", async () => {
+    const before = await listCacheDirNames();
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const details = first.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const after = await listCacheDirNames();
+    const newDirs = after.filter((name) => !before.includes(name));
+    expect(newDirs.length).toBe(1);
+    const cacheDirPath = join(tmpdir(), newDirs[0]);
+    const files = (await readdir(cacheDirPath)).filter((name) => name.endsWith(".json"));
+    expect(files.length).toBe(1);
+    await rm(join(cacheDirPath, files[0]), { force: true });
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: details.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to Exa and re-fetches when the cached file is corrupted", async () => {
+    const before = await listCacheDirNames();
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const details = first.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const after = await listCacheDirNames();
+    const newDirs = after.filter((name) => !before.includes(name));
+    expect(newDirs.length).toBe(1);
+    const cacheDirPath = join(tmpdir(), newDirs[0]);
+    const files = (await readdir(cacheDirPath)).filter((name) => name.endsWith(".json"));
+    expect(files.length).toBe(1);
+    await writeFile(join(cacheDirPath, files[0]), "not valid json{");
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: details.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("lazily creates a private per-process cache directory and files with the expected shape", async () => {
+    const before = await listCacheDirNames();
+    const tool = getRegisteredTool("web_read");
+    const urls = Array.from({ length: 6 }, (_, i) => `https://example.com/page-${i}`);
+    const textFor = (i: number) => Array.from({ length: 5000 }, (_, j) => `p${i}-line ${j}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      const idx = Number(url.match(/page-(\d+)/)?.[1] ?? "0");
+      return jsonResponse({ results: [{ title: "Example", url, text: textFor(idx) }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const url of urls) {
+      await tool.execute("call-1", { url }, new AbortController().signal, noop, {});
+    }
+
+    const after = await listCacheDirNames();
+    const newDirs = after.filter((name) => !before.includes(name));
+    expect(newDirs.length).toBe(1);
+    const cacheDirPath = join(tmpdir(), newDirs[0]);
+
+    const dirStat = await stat(cacheDirPath);
+    expect(dirStat.mode & 0o777).toBe(0o700);
+
+    const entries = await readdir(cacheDirPath);
+    expect(entries.filter((name) => name.endsWith(".tmp")).length).toBe(0);
+
+    const jsonFiles = entries.filter((name) => name.endsWith(".json"));
+    expect(jsonFiles.length).toBe(5);
+
+    for (const file of jsonFiles) {
+      for (const url of urls) {
+        expect(file).not.toContain(url);
+      }
+      expect(file).not.toContain("example.com");
+      expect(file).not.toContain("page-");
+      const fileStat = await stat(join(cacheDirPath, file));
+      expect(fileStat.mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("recursively removes the cache directory on session_shutdown and lazily recreates it afterward", async () => {
+    const before = await listCacheDirNames();
+    const { tool, shutdown } = getRegisteredToolWithShutdown("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const details = first.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const afterFirstFetch = await listCacheDirNames();
+    const createdDirs = afterFirstFetch.filter((name) => !before.includes(name));
+    expect(createdDirs.length).toBe(1);
+    const cacheDirPath = join(tmpdir(), createdDirs[0]);
+    await expect(stat(cacheDirPath)).resolves.toBeDefined();
+
+    await shutdown();
+
+    await expect(stat(cacheDirPath)).rejects.toThrow();
+
+    // Continuing after shutdown finds no disk entry, re-fetches, and lazily
+    // creates a fresh cache directory.
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: details.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const afterSecondFetch = await listCacheDirNames();
+    const newDirs = afterSecondFetch.filter((name) => name !== createdDirs[0]);
+    expect(newDirs.length).toBeGreaterThan(0);
   });
 
   it("rejects an offset at or beyond the end of the page content", async () => {

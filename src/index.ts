@@ -1,3 +1,7 @@
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -7,6 +11,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text, TruncatedText } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+
+const CACHE_DIR_PREFIX = "pi-scryer-";
+const CACHE_MAX_ENTRIES = 5;
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
@@ -67,6 +74,19 @@ interface ExaContentResult {
   title?: string;
   url: string;
   text: string;
+}
+
+function isCachedExaContentResult(value: unknown): value is ExaContentResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (!isNonEmptyString(value.url) || !isNonEmptyString(value.text)) {
+    return false;
+  }
+  if (value.title !== undefined && typeof value.title !== "string") {
+    return false;
+  }
+  return true;
 }
 
 interface ExaSearchResult {
@@ -293,11 +313,120 @@ function parseFirstResult(body: unknown): ExaContentResult {
 }
 
 export default function activate(api: ExtensionAPI): void {
-  // ponytail: single-entry continuation cache for web_read. Only the most
-  // recently fetched page is retained; upgrade to a bounded LRU only if
-  // interleaved multi-page continuation (reading page A, then B, then
-  // resuming A) becomes a real requirement.
-  let continuationCache: { requestedUrl: string; result: ExaContentResult } | null = null;
+  // Per-process disk cache for web_read continuations. Bounded to
+  // CACHE_MAX_ENTRIES pages, each backed by a private temp-directory file
+  // keyed by a SHA-256 hash of the normalized URL (never the raw URL). Only
+  // file path/order metadata is retained in memory between execute calls; no
+  // full Exa text is kept resident. All read/write/evict/cleanup operations
+  // are serialized through a small promise queue so cleanup and eviction
+  // never race an in-flight file operation; network fetches stay outside it.
+  let cacheDir: string | undefined;
+  let cacheDirPromise: Promise<string> | undefined;
+  const cacheEntries = new Map<string, { file: string }>();
+  let cacheQueue: Promise<void> = Promise.resolve();
+
+  function enqueueCacheTask<T>(task: () => Promise<T>): Promise<T> {
+    const run = cacheQueue.then(task, task);
+    cacheQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async function ensureCacheDir(): Promise<string> {
+    if (cacheDir) {
+      return cacheDir;
+    }
+    if (!cacheDirPromise) {
+      cacheDirPromise = (async () => {
+        const dir = await mkdtemp(join(tmpdir(), CACHE_DIR_PREFIX));
+        await chmod(dir, 0o700);
+        cacheDir = dir;
+        return dir;
+      })();
+    }
+    return cacheDirPromise;
+  }
+
+  async function readCachedResult(normalizedUrl: string): Promise<ExaContentResult | undefined> {
+    return enqueueCacheTask(async () => {
+      const entry = cacheEntries.get(normalizedUrl);
+      if (!entry) {
+        return undefined;
+      }
+      try {
+        const raw = await readFile(entry.file, "utf-8");
+        const parsed: unknown = JSON.parse(raw);
+        if (!isCachedExaContentResult(parsed)) {
+          throw new Error("invalid cache entry");
+        }
+        // Refresh LRU order on cache hit.
+        cacheEntries.delete(normalizedUrl);
+        cacheEntries.set(normalizedUrl, entry);
+        return parsed;
+      } catch {
+        cacheEntries.delete(normalizedUrl);
+        await rm(entry.file, { force: true }).catch(() => {});
+        return undefined;
+      }
+    });
+  }
+
+  async function writeCachedResult(normalizedUrl: string, result: ExaContentResult): Promise<void> {
+    await enqueueCacheTask(async () => {
+      const dir = await ensureCacheDir();
+      const hash = createHash("sha256").update(normalizedUrl).digest("hex");
+      const suffix = randomBytes(8).toString("hex");
+      const finalPath = join(dir, `${hash}-${suffix}.json`);
+      const tmpPath = `${finalPath}.tmp`;
+      const payload: ExaContentResult = { title: result.title, url: result.url, text: result.text };
+      await writeFile(tmpPath, JSON.stringify(payload), { mode: 0o600 });
+      await rename(tmpPath, finalPath);
+
+      const previous = cacheEntries.get(normalizedUrl);
+      cacheEntries.delete(normalizedUrl);
+      cacheEntries.set(normalizedUrl, { file: finalPath });
+      if (previous && previous.file !== finalPath) {
+        await rm(previous.file, { force: true }).catch(() => {});
+      }
+
+      while (cacheEntries.size > CACHE_MAX_ENTRIES) {
+        const oldestKey = cacheEntries.keys().next().value;
+        if (oldestKey === undefined) {
+          break;
+        }
+        const oldestEntry = cacheEntries.get(oldestKey);
+        cacheEntries.delete(oldestKey);
+        if (oldestEntry) {
+          await rm(oldestEntry.file, { force: true }).catch(() => {});
+        }
+      }
+    });
+  }
+
+  async function deleteCachedResult(normalizedUrl: string): Promise<void> {
+    await enqueueCacheTask(async () => {
+      const entry = cacheEntries.get(normalizedUrl);
+      if (!entry) {
+        return;
+      }
+      cacheEntries.delete(normalizedUrl);
+      await rm(entry.file, { force: true }).catch(() => {});
+    });
+  }
+
+  api.on("session_shutdown", async () => {
+    await enqueueCacheTask(async () => {
+      const dir = cacheDir;
+      cacheEntries.clear();
+      cacheDir = undefined;
+      cacheDirPromise = undefined;
+      if (dir) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    }).catch(() => {});
+  });
 
   api.registerTool({
     name: "web_read",
@@ -382,8 +511,15 @@ export default function activate(api: ExtensionAPI): void {
       const normalizedUrl = new URL(rawUrl).toString();
 
       let result: ExaContentResult;
-      if (offset > 0 && continuationCache && continuationCache.requestedUrl === normalizedUrl) {
-        result = continuationCache.result;
+      let servedFromCache = false;
+      if (offset > 0) {
+        const cached = await readCachedResult(normalizedUrl);
+        if (cached) {
+          result = cached;
+          servedFromCache = true;
+        } else {
+          result = await fetchExaContent(normalizedUrl, signal);
+        }
       } else {
         result = await fetchExaContent(normalizedUrl, signal);
       }
@@ -430,7 +566,13 @@ export default function activate(api: ExtensionAPI): void {
         ...(hasMore ? { nextOffset } : {}),
       };
 
-      continuationCache = hasMore ? { requestedUrl: normalizedUrl, result } : null;
+      if (hasMore) {
+        if (!servedFromCache) {
+          await writeCachedResult(normalizedUrl, result);
+        }
+      } else {
+        await deleteCachedResult(normalizedUrl);
+      }
 
       return {
         content: [{ type: "text", text: resultText }],
