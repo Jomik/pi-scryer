@@ -4,7 +4,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SEARCH_TITLE_MAX_CHARS = 200;
 const SEARCH_URL_MAX_CHARS = 2048;
 
-export { EXA_CONTENTS_URL, EXA_SEARCH_URL, SEARCH_TITLE_MAX_CHARS, SEARCH_URL_MAX_CHARS };
+export { EXA_SEARCH_URL, SEARCH_TITLE_MAX_CHARS, SEARCH_URL_MAX_CHARS };
 
 export function truncateForDisplay(text: string, maxChars: number): string {
   const singleLine = text.replace(/\s+/g, " ").trim();
