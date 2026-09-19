@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import activate from "../src/index";
@@ -8,6 +8,9 @@ interface WebReadToolDetails {
   title?: string;
   source: string;
   truncated: boolean;
+  offset: number;
+  nextOffset?: number;
+  totalLength: number;
 }
 
 interface WebSearchToolDetails {
@@ -160,8 +163,20 @@ describe("web_read extension", () => {
 
     expect(tool.name).toBe("web_read");
     expect(tool.parameters.required).toEqual(["url"]);
-    expect(Object.keys(tool.parameters.properties)).toEqual(["url"]);
+    expect(Object.keys(tool.parameters.properties)).toEqual(["url", "offset"]);
     expect(tool.parameters.additionalProperties).toBe(false);
+  });
+
+  it.each([[-1], [1.5], [-0.5]])("rejects invalid offset %j without calling fetch", async (offset) => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page", offset }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: offset must be a non-negative integer");
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -239,6 +254,8 @@ describe("web_read extension", () => {
       title: "Example",
       source: "https://resolved.example/page",
       truncated: false,
+      offset: 0,
+      totalLength: "Readable text".length,
     });
   });
 
@@ -464,9 +481,11 @@ describe("web_read extension", () => {
     await assertion;
   });
 
-  it("truncates oversized text with a source header and size note", async () => {
+  it("truncates oversized text with a source header and continuation marker", async () => {
     const tool = getRegisteredTool("web_read");
-    const longText = "x".repeat(DEFAULT_MAX_BYTES + 1000);
+    const longText = Array.from({ length: Math.ceil((DEFAULT_MAX_BYTES + 1000) / 100) }, () => "x".repeat(99)).join(
+      "\n",
+    );
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({
         results: [
@@ -490,13 +509,347 @@ describe("web_read extension", () => {
 
     const text = result.content[0].text;
     const sourceIndex = text.indexOf("https://resolved.example/page");
-    const truncationIndex = text.indexOf("[Showing first");
+    const markerIndex = text.indexOf("Continue with web_read(url, offset:");
 
     expect(sourceIndex).toBeGreaterThanOrEqual(0);
     expect(sourceIndex).toBeLessThan(200);
-    expect(truncationIndex).toBeGreaterThanOrEqual(0);
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
     expect(new TextEncoder().encode(text).byteLength).toBeLessThan(new TextEncoder().encode(longText).byteLength);
     expect(text).not.toContain(SECRET_KEY);
+
+    const details = result.details as WebReadToolDetails;
+    expect(details.truncated).toBe(true);
+    expect(details.offset).toBe(0);
+    expect(details.totalLength).toBe(longText.length);
+    expect(details.nextOffset).toBeGreaterThan(0);
+    expect(details.nextOffset).toBeLessThan(longText.length);
+  });
+
+  it("continues a long page via the exact returned nextOffset using the cache, without re-fetching", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const chunks: WebReadToolDetails[] = [];
+    let offset: number | undefined;
+    for (let iterations = 0; ; iterations++) {
+      if (iterations > 20) {
+        throw new Error("too many iterations");
+      }
+      const params: Record<string, unknown> = { url: "https://example.com/page" };
+      if (offset !== undefined) {
+        params.offset = offset;
+      }
+      const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
+      const details = result.details as WebReadToolDetails;
+      chunks.push(details);
+      if (!details.truncated) {
+        break;
+      }
+      offset = details.nextOffset;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[chunks.length - 1].truncated).toBe(false);
+    expect(chunks[chunks.length - 1].nextOffset).toBeUndefined();
+
+    let expectedOffset = 0;
+    for (const details of chunks) {
+      expect(details.offset).toBe(expectedOffset);
+      expect(details.totalLength).toBe(longText.length);
+      expectedOffset = details.nextOffset ?? longText.length;
+    }
+    expect(expectedOffset).toBe(longText.length);
+  });
+
+  it("re-fetches fresh content whenever offset is omitted or 0, even with a matching cache", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect((first.details as WebReadToolDetails).truncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: 0 },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("misses the cache and re-fetches when continuing a different URL", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
+    const longTextB = Array.from({ length: 5000 }, (_, i) => `b-line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      const text = url.includes("page-a") ? longTextA : longTextB;
+      return jsonResponse({ results: [{ title: "Example", url, text }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstA = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const detailsA = firstA.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-b", offset: detailsA.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts with an empty cache in a new extension instance and re-fetches", async () => {
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const toolA = getRegisteredTool("web_read");
+    const firstA = await toolA.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const detailsA = firstA.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const toolB = getRegisteredTool("web_read");
+    await toolB.execute(
+      "call-1",
+      { url: "https://example.com/page", offset: detailsA.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("replaces the one-entry cache on a fresh read, evicting the prior continuation", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
+    const longTextB = Array.from({ length: 5000 }, (_, i) => `b-line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      const text = url.includes("page-a") ? longTextA : longTextB;
+      return jsonResponse({ results: [{ title: "Example", url, text }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstA = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const detailsA = firstA.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await tool.execute("call-1", { url: "https://example.com/page-b" }, new AbortController().signal, noop, {});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a", offset: detailsA.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not cache a short, complete read", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: "short text" }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const details = result.details as WebReadToolDetails;
+    expect(details.truncated).toBe(false);
+    expect(details.nextOffset).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page", offset: 100 }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not poison the cache when an unrelated continuation fetch fails", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
+      const url = body.urls[0];
+      if (url.includes("page-a")) {
+        return jsonResponse({ results: [{ title: "Example", url, text: longTextA }] });
+      }
+      return jsonResponse({ error: "boom" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstA = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    const detailsA = firstA.details as WebReadToolDetails;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page-failing", offset: detailsA.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("request failed with status 500");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const continuedA = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page-a", offset: detailsA.nextOffset },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((continuedA.details as WebReadToolDetails).offset).toBe(detailsA.nextOffset);
+  });
+
+  it("rejects an offset at or beyond the end of the page content", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: "0123456789" }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page", offset: 10 }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
+
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page", offset: 20 }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
+  });
+
+  it("reconstructs unicode content across a chunk boundary without corruption", async () => {
+    const tool = getRegisteredTool("web_read");
+    const emojiLine = "emoji line \u{1F600}\u{1F389}\u{1F44D} with surrogate pairs";
+    const lines: string[] = [];
+    for (let i = 0; i < 2500; i++) {
+      lines.push(i === 1200 ? emojiLine : `line ${i}`);
+    }
+    const longText = lines.join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const header = "# Example\nSource: https://resolved.example/page\n\n";
+    let offset: number | undefined;
+    let reconstructed = "";
+    for (let iterations = 0; ; iterations++) {
+      if (iterations > 20) {
+        throw new Error("too many iterations");
+      }
+      const params: Record<string, unknown> = { url: "https://example.com/page" };
+      if (offset !== undefined) {
+        params.offset = offset;
+      }
+      const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
+      const text = result.content[0].text;
+      expect(text).not.toContain("\uFFFD");
+      const markerIndex = text.indexOf("\n\n[Showing chars");
+      const body = markerIndex >= 0 ? text.slice(header.length, markerIndex) : text.slice(header.length);
+      reconstructed += body;
+      const details = result.details as WebReadToolDetails;
+      if (!details.truncated) {
+        break;
+      }
+      offset = details.nextOffset;
+    }
+
+    expect(reconstructed).toBe(longText);
+    expect(reconstructed).toContain(emojiLine);
+  });
+
+  it("keeps every returned chunk, including header and marker, within the byte and line limits", async () => {
+    const tool = getRegisteredTool("web_read");
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i} with some extra padding text`).join("\n");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    let offset: number | undefined;
+    for (let iterations = 0; ; iterations++) {
+      if (iterations > 20) {
+        throw new Error("too many iterations");
+      }
+      const params: Record<string, unknown> = { url: "https://example.com/page" };
+      if (offset !== undefined) {
+        params.offset = offset;
+      }
+      const result = await tool.execute("call-1", params, new AbortController().signal, noop, {});
+      const text = result.content[0].text;
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+      expect(text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
+      const details = result.details as WebReadToolDetails;
+      if (!details.truncated) {
+        break;
+      }
+      offset = details.nextOffset;
+    }
   });
 });
 
@@ -804,6 +1157,20 @@ describe("web_read rendering", () => {
     expect(rendered).toContain(longUrl);
   });
 
+  it("renderCall includes the offset when nonzero, collapsed and expanded", () => {
+    const tool = getRegisteredTool("web_read");
+    const url = "https://example.com/page";
+
+    const expandedZero = tool.renderCall?.({ url, offset: 0 }, theme, { expanded: true });
+    expect(renderText(expandedZero as RenderedText)).not.toContain("offset");
+
+    const expanded = tool.renderCall?.({ url, offset: 4096 }, theme, { expanded: true });
+    expect(renderText(expanded as RenderedText)).toContain("4096");
+
+    const collapsed = tool.renderCall?.({ url, offset: 4096 }, theme, { expanded: false });
+    expect(renderText(collapsed as RenderedText)).toContain("4096");
+  });
+
   it("renderResult shows a compact partial state", () => {
     const tool = getRegisteredTool("web_read");
     const component = tool.renderResult?.(
@@ -832,7 +1199,10 @@ describe("web_read rendering", () => {
     const tool = getRegisteredTool("web_read");
     const fullText = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
     const component = tool.renderResult?.(
-      { content: [{ type: "text", text: fullText }], details: { source: "https://example.com", truncated: false } },
+      {
+        content: [{ type: "text", text: fullText }],
+        details: { source: "https://example.com", truncated: false, offset: 0, totalLength: fullText.length },
+      },
       { expanded: true, isPartial: false },
       theme,
       { isError: false },
@@ -845,7 +1215,13 @@ describe("web_read rendering", () => {
     const component = tool.renderResult?.(
       {
         content: [{ type: "text", text: "body" }],
-        details: { title: "Example Title", source: "https://example.com/page", truncated: false },
+        details: {
+          title: "Example Title",
+          source: "https://example.com/page",
+          truncated: false,
+          offset: 0,
+          totalLength: 4,
+        },
       },
       { expanded: false, isPartial: false },
       theme,
@@ -857,13 +1233,16 @@ describe("web_read rendering", () => {
     expect(visibleWidth(lines[0])).toBeLessThanOrEqual(60);
     expect(rendered).toContain("Example Title");
     expect(rendered).toContain("https://example.com/page");
-    expect(rendered).not.toContain("(truncated)");
+    expect(rendered).not.toContain("more");
   });
 
   it("renderResult collapsed shows only the source when the title is unknown, without inventing one", () => {
     const tool = getRegisteredTool("web_read");
     const component = tool.renderResult?.(
-      { content: [{ type: "text", text: "body" }], details: { source: "https://example.com/page", truncated: false } },
+      {
+        content: [{ type: "text", text: "body" }],
+        details: { source: "https://example.com/page", truncated: false, offset: 0, totalLength: 4 },
+      },
       { expanded: false, isPartial: false },
       theme,
       { isError: false },
@@ -873,16 +1252,27 @@ describe("web_read rendering", () => {
     expect(rendered).not.toMatch(/^Example/);
   });
 
-  it("renderResult collapsed appends a truncated marker when the result was truncated", () => {
+  it("renderResult collapsed indicates a bounded continuation with the next offset, without leaking cached content", () => {
     const tool = getRegisteredTool("web_read");
     const component = tool.renderResult?.(
-      { content: [{ type: "text", text: "body" }], details: { source: "https://example.com/page", truncated: true } },
+      {
+        content: [{ type: "text", text: "body" }],
+        details: {
+          source: "https://example.com/page",
+          truncated: true,
+          offset: 0,
+          nextOffset: 12345,
+          totalLength: 99999,
+        },
+      },
       { expanded: false, isPartial: false },
       theme,
       { isError: false },
     );
     const rendered = renderText(component as RenderedText);
-    expect(rendered).toContain("(truncated)");
+    expect(rendered).toContain("more");
+    expect(rendered).toContain("12345");
+    expect(rendered).not.toContain("body");
   });
 });
 
