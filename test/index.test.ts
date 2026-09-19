@@ -25,5 +25,6 @@ describe("extension registration", () => {
   it("registers exactly one scryer command", () => {
     const { commands } = activateExtension();
     expect(commands.map((command) => command.name)).toEqual(["scryer"]);
+    expect(commands[0].description).toBe("Manage the Exa API key used by pi-scryer (status, login, logout)");
   });
 });

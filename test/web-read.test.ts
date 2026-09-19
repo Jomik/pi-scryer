@@ -3,6 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createIdentityTheme,
+  execFileMock,
   getRegisteredTool,
   jsonResponse,
   noop,
@@ -13,6 +14,14 @@ import {
   textResponse,
   type WebReadToolDetails,
 } from "./harness";
+
+type ExecFileCallback = (
+  error: (Error & { stdout?: string; stderr?: string }) | null,
+  stdout: string,
+  stderr: string,
+) => void;
+
+const KEYCHAIN_KEY = "keychain-test-key";
 
 describe("web_read extension", () => {
   beforeEach(() => {
@@ -67,17 +76,53 @@ describe("web_read extension", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects with missing key error without calling fetch", async () => {
+  it("rejects with missing key error without calling fetch when Keychain and env are both unset", async () => {
     delete process.env.EXA_API_KEY;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: missing EXA_API_KEY");
+    ).rejects.toThrow("web_read: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY");
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("succeeds using a Keychain-resolved key when EXA_API_KEY is unset", async () => {
+    delete process.env.EXA_API_KEY;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    execFileMock.mockImplementation((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
+      callback(null, `${KEYCHAIN_KEY}\n`, "");
+    });
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [
+          {
+            title: "Example",
+            url: "https://resolved.example/page",
+            text: "Readable text",
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-api-key")).toBe(KEYCHAIN_KEY);
+    expect(result.content[0].text).toContain("Readable text");
   });
 
   it("returns readable text on success and calls the Exa endpoint correctly", async () => {

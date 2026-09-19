@@ -130,11 +130,6 @@ export function createWebReadTool(cache: ContinuationCache) {
         offset = rawOffset;
       }
 
-      const apiKey = process.env.EXA_API_KEY?.trim();
-      if (!isNonEmptyString(apiKey)) {
-        throw new Error("web_read: missing EXA_API_KEY");
-      }
-
       const normalizedUrl = new URL(rawUrl).toString();
 
       let result: ExaContentResult;
