@@ -145,26 +145,35 @@ export async function listCacheDirNames(): Promise<string[]> {
   return entries.filter((entry) => entry.startsWith(CACHE_DIR_PREFIX));
 }
 
+export interface RegisteredCommand {
+  name: string;
+  description?: string;
+  handler: (args: string, ctx: unknown) => Promise<void>;
+}
+
 export interface Activation {
   tools: RegisteredTool[];
+  commands: RegisteredCommand[];
   /** Invokes every session_shutdown handler registered by this activation. */
   shutdown: () => Promise<void>;
 }
 
 export function activateExtension(): Activation {
   const registerTool = vi.fn<(tool: RegisteredTool) => void>();
+  const registerCommand = vi.fn<(name: string, options: Omit<RegisteredCommand, "name">) => void>();
   const shutdownHandlers: ShutdownHandler[] = [];
   const on = vi.fn((event: string, handler: ShutdownHandler) => {
     if (event === "session_shutdown") {
       shutdownHandlers.push(handler);
     }
   });
-  const api = { registerTool, on } as unknown as ExtensionAPI;
+  const api = { registerTool, registerCommand, on } as unknown as ExtensionAPI;
   activate(api);
   expect(registerTool).toHaveBeenCalledTimes(2);
   capturedShutdownHandlers.push(...shutdownHandlers);
   return {
     tools: registerTool.mock.calls.map((call) => call[0]),
+    commands: registerCommand.mock.calls.map(([name, options]) => ({ name, ...options })),
     shutdown: async () => {
       for (const handler of shutdownHandlers) {
         await handler({ type: "session_shutdown", reason: "quit" }, {});

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getRegisteredTools, ORIGINAL_ENV, SECRET_KEY } from "./harness";
+import { activateExtension, ORIGINAL_ENV, SECRET_KEY } from "./harness";
 
 describe("extension registration", () => {
   beforeEach(() => {
@@ -18,7 +18,12 @@ describe("extension registration", () => {
   });
 
   it("registers exactly web_read and web_search", () => {
-    const tools = getRegisteredTools();
+    const { tools } = activateExtension();
     expect(tools.map((tool) => tool.name).sort()).toEqual(["web_read", "web_search"]);
+  });
+
+  it("registers exactly one scryer command", () => {
+    const { commands } = activateExtension();
+    expect(commands.map((command) => command.name)).toEqual(["scryer"]);
   });
 });

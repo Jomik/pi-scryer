@@ -19,11 +19,33 @@ pi -e npm:pi-scryer
 
 ## Configuration
 
-Requires an Exa API key:
+Requires an Exa API key.
+
+On macOS, run `/scryer login` in an interactive session to store the key in
+the macOS Keychain (fixed service `pi-scryer`, account `exa-api-key`). This
+is the recommended path: the key is stored securely by the OS and is never
+written to any project, session, or cache file.
+
+On headless macOS or any other platform, set the environment variable
+instead:
 
 ```
 export EXA_API_KEY=...
 ```
+
+Other `/scryer` subcommands:
+
+- `/scryer status` — reports which source will supply the key (`Keychain`,
+  `environment`, or `missing`) without reading or revealing its value.
+- `/scryer logout` — removes the Keychain item (macOS only, idempotent).
+  Does not touch the `EXA_API_KEY` environment variable; if it is still set,
+  it remains available as a fallback.
+
+Precedence: on macOS, the Keychain is checked first; if it is missing,
+empty, or inaccessible, the trimmed `EXA_API_KEY` environment variable is
+used instead. On non-macOS platforms, only the environment variable is
+consulted. The key itself is never shown in any notification, and never
+stored or cached in any project, session, or cache file.
 
 ## Tools
 

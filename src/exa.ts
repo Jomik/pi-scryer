@@ -85,7 +85,7 @@ export async function callExaApi(
 ): Promise<unknown> {
   const apiKey = await resolveExaApiKey();
   if (!isNonEmptyString(apiKey)) {
-    throw new Error(`${toolPrefix}: missing EXA_API_KEY or macOS Keychain entry`);
+    throw new Error(`${toolPrefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`);
   }
 
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
