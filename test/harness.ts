@@ -1,0 +1,180 @@
+import { readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { afterEach, expect, vi } from "vitest";
+import activate from "../src/index";
+
+export interface WebReadToolDetails {
+  title?: string;
+  source: string;
+  truncated: boolean;
+  offset: number;
+  nextOffset?: number;
+  totalLength: number;
+}
+
+export interface WebSearchToolDetails {
+  resultCount: number;
+  omitted: number;
+  truncated: boolean;
+}
+
+export interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  details: WebReadToolDetails | WebSearchToolDetails | undefined;
+}
+
+export interface RenderedText {
+  render: (width: number) => string[];
+}
+
+export interface FakeTheme {
+  fg: (color: string, text: string) => string;
+  bold: (text: string) => string;
+}
+
+export interface ToolCallRenderContext {
+  expanded: boolean;
+}
+
+export interface ToolResultRenderOptions {
+  expanded: boolean;
+  isPartial: boolean;
+}
+
+export interface ToolResultRenderContext {
+  isError: boolean;
+}
+
+export function createIdentityTheme(): FakeTheme {
+  return {
+    fg: (_color, text) => text,
+    bold: (text) => text,
+  };
+}
+
+export const LARGE_RENDER_WIDTH = 10_000;
+
+export function renderText(component: RenderedText, width: number = LARGE_RENDER_WIDTH): string {
+  return component
+    .render(width)
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
+
+export interface ToolSchema {
+  type: string;
+  properties: Record<string, unknown>;
+  required: string[];
+  additionalProperties: boolean;
+}
+
+export interface RegisteredTool {
+  name: string;
+  parameters: ToolSchema;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+    onUpdate: (...args: unknown[]) => void,
+    ctx: unknown,
+  ) => Promise<ToolResult>;
+  renderCall?: (args: Record<string, unknown>, theme: FakeTheme, context: ToolCallRenderContext) => RenderedText;
+  renderResult?: (
+    result: ToolResult,
+    options: ToolResultRenderOptions,
+    theme: FakeTheme,
+    context: ToolResultRenderContext,
+  ) => RenderedText;
+}
+
+export const ORIGINAL_ENV = process.env.EXA_API_KEY;
+export const SECRET_KEY = "secret-test-key";
+export const CACHE_DIR_PREFIX = "pi-scryer-";
+
+export type ShutdownHandler = (event: unknown, ctx: unknown) => Promise<void> | void;
+
+// Global registry of session_shutdown handlers captured from every activate()
+// call in this file. A top-level afterEach drains and invokes them so no test
+// leaves a private cache temp directory behind, regardless of which describe
+// block or assertion path it took.
+let capturedShutdownHandlers: ShutdownHandler[] = [];
+
+afterEach(async () => {
+  const handlers = capturedShutdownHandlers;
+  capturedShutdownHandlers = [];
+  for (const handler of handlers) {
+    await handler({ type: "session_shutdown", reason: "quit" }, {});
+  }
+});
+
+export async function listCacheDirNames(): Promise<string[]> {
+  const entries = await readdir(tmpdir());
+  return entries.filter((entry) => entry.startsWith(CACHE_DIR_PREFIX));
+}
+
+export interface Activation {
+  tools: RegisteredTool[];
+  /** Invokes every session_shutdown handler registered by this activation. */
+  shutdown: () => Promise<void>;
+}
+
+export function activateExtension(): Activation {
+  const registerTool = vi.fn<(tool: RegisteredTool) => void>();
+  const shutdownHandlers: ShutdownHandler[] = [];
+  const on = vi.fn((event: string, handler: ShutdownHandler) => {
+    if (event === "session_shutdown") {
+      shutdownHandlers.push(handler);
+    }
+  });
+  const api = { registerTool, on } as unknown as ExtensionAPI;
+  activate(api);
+  expect(registerTool).toHaveBeenCalledTimes(2);
+  capturedShutdownHandlers.push(...shutdownHandlers);
+  return {
+    tools: registerTool.mock.calls.map((call) => call[0]),
+    shutdown: async () => {
+      for (const handler of shutdownHandlers) {
+        await handler({ type: "session_shutdown", reason: "quit" }, {});
+      }
+    },
+  };
+}
+
+export function getRegisteredTools(): RegisteredTool[] {
+  return activateExtension().tools;
+}
+
+export function getRegisteredTool(name: string): RegisteredTool {
+  const tool = getRegisteredTools().find((candidate) => candidate.name === name);
+  if (!tool) {
+    throw new Error(`tool ${name} was not registered`);
+  }
+  return tool;
+}
+
+/** Like getRegisteredTool, but also exposes a way to invoke this activation's captured session_shutdown handler directly. */
+export function getRegisteredToolWithShutdown(name: string): {
+  tool: RegisteredTool;
+  shutdown: () => Promise<void>;
+} {
+  const { tools, shutdown } = activateExtension();
+  const tool = tools.find((candidate) => candidate.name === name);
+  if (!tool) {
+    throw new Error(`tool ${name} was not registered`);
+  }
+  return { tool, shutdown };
+}
+
+export function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export function textResponse(body: string, status = 200): Response {
+  return new Response(body, { status });
+}
+
+export function noop(): void {}
