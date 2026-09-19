@@ -180,6 +180,34 @@ describe("web_read extension", () => {
     expect(result.details).toBeUndefined();
   });
 
+  it("omits the title heading when the provider returns no title", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [
+          {
+            url: "https://resolved.example/page",
+            text: "Readable text",
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    const text = result.content[0].text;
+    expect(text.startsWith("Source: https://resolved.example/page")).toBe(true);
+    expect(text).not.toContain("# https://resolved.example/page");
+    expect(text).toContain("Readable text");
+  });
+
   it.each([
     [401, "invalid API key"],
     [402, "quota exceeded"],
@@ -599,7 +627,7 @@ describe("web_search extension", () => {
     expect(text).not.toContain("E".repeat(501));
   });
 
-  it("falls back to a truncated URL as title when title is missing, and rejects URLs over 2048 chars", async () => {
+  it("omits the title line when title is missing, and rejects URLs over 2048 chars", async () => {
     const tool = getRegisteredTool("web_search");
     const longUrl = `https://example.com/${"a".repeat(300)}`;
     const overlongUrl = `https://example.com/${"a".repeat(2048)}`;
@@ -612,10 +640,11 @@ describe("web_search extension", () => {
 
     const result = await tool.execute("call-1", { query: "example" }, new AbortController().signal, noop, {});
     const text = result.content[0].text;
-    const truncatedTitle = longUrl.slice(0, 200);
 
-    expect(text.split("\n")[0]).toBe(`1. ${truncatedTitle}`);
-    expect(text).toContain(`Source: ${longUrl}`);
+    expect(text.split("\n")[0]).toBe(`1. Source: ${longUrl}`);
+    const sourceOccurrences = text.split(`Source: ${longUrl}`).length - 1;
+    expect(sourceOccurrences).toBe(1);
+    expect(text).not.toMatch(/^\d+\. https:\/\//m);
     expect(text).not.toContain(overlongUrl);
     expect(text).toContain("1 result omitted");
   });

@@ -39,7 +39,7 @@ interface ExaContentResult {
 }
 
 interface ExaSearchResult {
-  title: string;
+  title?: string;
   url: string;
   text?: string;
 }
@@ -143,9 +143,7 @@ function parseSearchResults(body: unknown): { results: ExaSearchResult[]; omitte
       continue;
     }
     const rawTitle = entry.title;
-    const title = isNonEmptyString(rawTitle)
-      ? rawTitle.trim().slice(0, SEARCH_TITLE_MAX_CHARS)
-      : url.slice(0, SEARCH_TITLE_MAX_CHARS);
+    const title = isNonEmptyString(rawTitle) ? rawTitle.trim().slice(0, SEARCH_TITLE_MAX_CHARS) : undefined;
     const rawText = entry.text;
     const text = isNonEmptyString(rawText) ? rawText.trim().slice(0, SEARCH_EXCERPT_MAX_CHARS) : undefined;
     valid.push({ title, url, text });
@@ -165,8 +163,12 @@ function buildSearchMarkdown(results: ExaSearchResult[], omitted: number): strin
 
   const lines: string[] = [];
   results.forEach((result, index) => {
-    lines.push(`${index + 1}. ${result.title}`);
-    lines.push(`Source: ${result.url}`);
+    if (result.title) {
+      lines.push(`${index + 1}. ${result.title}`);
+      lines.push(`Source: ${result.url}`);
+    } else {
+      lines.push(`${index + 1}. Source: ${result.url}`);
+    }
     if (result.text) {
       lines.push(result.text);
     }
@@ -245,8 +247,9 @@ export default function activate(api: ExtensionAPI): void {
       const body = await callExaApi("web_read", EXA_CONTENTS_URL, { urls: [normalizedUrl], text: true }, signal);
 
       const result = parseFirstResult(body);
-      const title = result.title ?? result.url;
-      const markdown = `# ${title}\nSource: ${result.url}\n\n${result.text}`;
+      const markdown = result.title
+        ? `# ${result.title}\nSource: ${result.url}\n\n${result.text}`
+        : `Source: ${result.url}\n\n${result.text}`;
 
       const truncated = truncateHead(markdown, {
         maxLines: DEFAULT_MAX_LINES,
