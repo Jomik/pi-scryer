@@ -291,10 +291,15 @@ describe("web_search extension", () => {
     const tool = getRegisteredTool("web_search");
     const timeoutController = new AbortController();
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    let resolveFetchStarted: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      resolveFetchStarted = resolve;
+    });
     const fetchMock = vi.fn<typeof fetch>(
       (_input, init) =>
         new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal;
+          resolveFetchStarted();
           if (signal?.aborted) {
             reject(new DOMException("Aborted", "AbortError"));
             return;
@@ -308,6 +313,7 @@ describe("web_search extension", () => {
 
     const promise = tool.execute("call-1", { query: "example" }, new AbortController().signal, noop, {});
     const assertion = expect(promise).rejects.toThrow("web_search: request timed out");
+    await fetchStarted;
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeoutController.abort();
     await assertion;

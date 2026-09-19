@@ -83,15 +83,13 @@ export async function callExaApi(
   payload: unknown,
   signal: AbortSignal | undefined,
 ): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const composedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
   const apiKey = await resolveExaApiKey();
   if (!isNonEmptyString(apiKey)) {
-    throw new Error(
-      `${toolPrefix}: missing EXA_API_KEY (run \`/scryer login\` on macOS, or set the EXA_API_KEY environment variable)`,
-    );
+    throw new Error(`${toolPrefix}: missing EXA_API_KEY or macOS Keychain entry`);
   }
+
+  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const composedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   let response: Response;
   try {

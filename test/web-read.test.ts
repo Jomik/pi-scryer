@@ -267,10 +267,15 @@ describe("web_read extension", () => {
     const tool = getRegisteredTool("web_read");
     const timeoutController = new AbortController();
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    let resolveFetchStarted: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      resolveFetchStarted = resolve;
+    });
     const fetchMock = vi.fn<typeof fetch>(
       (_input, init) =>
         new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal;
+          resolveFetchStarted();
           if (signal?.aborted) {
             reject(new DOMException("Aborted", "AbortError"));
             return;
@@ -284,6 +289,7 @@ describe("web_read extension", () => {
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
     const assertion = expect(promise).rejects.toThrow("web_read: request timed out");
+    await fetchStarted;
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeoutController.abort();
     await assertion;
@@ -347,8 +353,8 @@ describe("web_read extension", () => {
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
     const assertion = expect(promise).rejects.toThrow("web_read: request timed out");
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     await jsonStarted;
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeoutController.abort();
     await assertion;
   });
