@@ -5,6 +5,7 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
@@ -14,6 +15,28 @@ const SEARCH_MAX_RESULTS = 5;
 const SEARCH_EXCERPT_MAX_CHARS = 500;
 const SEARCH_TITLE_MAX_CHARS = 200;
 const SEARCH_URL_MAX_CHARS = 2048;
+const CALL_PREVIEW_MAX_CHARS = 80;
+const DISPLAY_LINE_MAX_CHARS = 80;
+
+interface WebReadToolDetails {
+  title?: string;
+  source: string;
+  truncated: boolean;
+}
+
+interface WebSearchToolDetails {
+  resultCount: number;
+  omitted: number;
+  truncated: boolean;
+}
+
+function truncateForDisplay(text: string, maxChars: number): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxChars) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, Math.max(0, maxChars - 1))}…`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -231,6 +254,39 @@ export default function activate(api: ExtensionAPI): void {
       },
       { additionalProperties: false },
     ),
+    renderCall(args, theme, context) {
+      const title = theme.fg("toolTitle", theme.bold("web_read "));
+      const url = typeof args?.url === "string" ? args.url : "";
+      const display = context.expanded ? url : truncateForDisplay(url, CALL_PREVIEW_MAX_CHARS);
+      return new Text(`${title}${theme.fg("accent", display)}`, 0, 0);
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      if (isPartial) {
+        return new Text(theme.fg("dim", "Reading\u2026"), 0, 0);
+      }
+      if (context.isError) {
+        return new Text(theme.fg("dim", "failed"), 0, 0);
+      }
+
+      const content = result.content[0];
+      const text = content?.type === "text" ? content.text : "";
+
+      if (expanded) {
+        return new Text(text, 0, 0);
+      }
+
+      const details = result.details as WebReadToolDetails | undefined;
+      if (!details) {
+        return new Text(theme.fg("muted", "done"), 0, 0);
+      }
+
+      const base = details.title ? `${details.title} \u2014 ${details.source}` : details.source;
+      let line = theme.fg("muted", truncateForDisplay(base, DISPLAY_LINE_MAX_CHARS));
+      if (details.truncated) {
+        line += theme.fg("dim", " (truncated)");
+      }
+      return new Text(line, 0, 0);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const rawUrl = typeof params?.url === "string" ? params.url.trim() : "";
       if (!isNonEmptyString(rawUrl) || !isHttpUrl(rawUrl)) {
@@ -263,9 +319,15 @@ export default function activate(api: ExtensionAPI): void {
         )} of ${formatSize(truncated.totalBytes)}]`;
       }
 
+      const details: WebReadToolDetails = {
+        title: result.title,
+        source: result.url,
+        truncated: truncated.truncated,
+      };
+
       return {
         content: [{ type: "text", text: resultText }],
-        details: undefined,
+        details,
       };
     },
   });
@@ -281,6 +343,48 @@ export default function activate(api: ExtensionAPI): void {
       },
       { additionalProperties: false },
     ),
+    renderCall(args, theme, context) {
+      const title = theme.fg("toolTitle", theme.bold("web_search "));
+      const query = typeof args?.query === "string" ? args.query : "";
+      const display = context.expanded ? query : truncateForDisplay(query, CALL_PREVIEW_MAX_CHARS);
+      return new Text(`${title}${theme.fg("accent", display)}`, 0, 0);
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      if (isPartial) {
+        return new Text(theme.fg("dim", "Searching\u2026"), 0, 0);
+      }
+      if (context.isError) {
+        return new Text(theme.fg("dim", "failed"), 0, 0);
+      }
+
+      const content = result.content[0];
+      const text = content?.type === "text" ? content.text : "";
+
+      if (expanded) {
+        return new Text(text, 0, 0);
+      }
+
+      const details = result.details as WebSearchToolDetails | undefined;
+      if (!details) {
+        return new Text(theme.fg("muted", "done"), 0, 0);
+      }
+
+      let summary =
+        details.resultCount === 0
+          ? "No results"
+          : details.resultCount === 1
+            ? "1 result"
+            : `${details.resultCount} results`;
+      if (details.omitted > 0) {
+        summary += `, ${details.omitted} omitted`;
+      }
+
+      let line = theme.fg("muted", summary);
+      if (details.truncated) {
+        line += theme.fg("dim", " (truncated)");
+      }
+      return new Text(line, 0, 0);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const rawQuery = typeof params?.query === "string" ? params.query.trim() : "";
       if (!isNonEmptyString(rawQuery)) {
@@ -313,9 +417,15 @@ export default function activate(api: ExtensionAPI): void {
         )} of ${formatSize(truncated.totalBytes)}]`;
       }
 
+      const details: WebSearchToolDetails = {
+        resultCount: results.length,
+        omitted,
+        truncated: truncated.truncated,
+      };
+
       return {
         content: [{ type: "text", text: resultText }],
-        details: undefined,
+        details,
       };
     },
   });

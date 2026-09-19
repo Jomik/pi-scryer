@@ -3,9 +3,59 @@ import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import activate from "../src/index";
 
+interface WebReadToolDetails {
+  title?: string;
+  source: string;
+  truncated: boolean;
+}
+
+interface WebSearchToolDetails {
+  resultCount: number;
+  omitted: number;
+  truncated: boolean;
+}
+
 interface ToolResult {
   content: Array<{ type: string; text: string }>;
-  details: undefined;
+  details: WebReadToolDetails | WebSearchToolDetails | undefined;
+}
+
+interface RenderedText {
+  render: (width: number) => string[];
+}
+
+interface FakeTheme {
+  fg: (color: string, text: string) => string;
+  bold: (text: string) => string;
+}
+
+interface ToolCallRenderContext {
+  expanded: boolean;
+}
+
+interface ToolResultRenderOptions {
+  expanded: boolean;
+  isPartial: boolean;
+}
+
+interface ToolResultRenderContext {
+  isError: boolean;
+}
+
+function createIdentityTheme(): FakeTheme {
+  return {
+    fg: (_color, text) => text,
+    bold: (text) => text,
+  };
+}
+
+const LARGE_RENDER_WIDTH = 10_000;
+
+function renderText(component: RenderedText): string {
+  return component
+    .render(LARGE_RENDER_WIDTH)
+    .map((line) => line.trimEnd())
+    .join("\n");
 }
 
 interface ToolSchema {
@@ -25,6 +75,13 @@ interface RegisteredTool {
     onUpdate: (...args: unknown[]) => void,
     ctx: unknown,
   ) => Promise<ToolResult>;
+  renderCall?: (args: Record<string, unknown>, theme: FakeTheme, context: ToolCallRenderContext) => RenderedText;
+  renderResult?: (
+    result: ToolResult,
+    options: ToolResultRenderOptions,
+    theme: FakeTheme,
+    context: ToolResultRenderContext,
+  ) => RenderedText;
 }
 
 const ORIGINAL_ENV = process.env.EXA_API_KEY;
@@ -177,7 +234,11 @@ describe("web_read extension", () => {
     expect(text).toContain("https://resolved.example/page");
     expect(text).toContain("Readable text");
     expect(text).not.toContain(SECRET_KEY);
-    expect(result.details).toBeUndefined();
+    expect(result.details).toEqual({
+      title: "Example",
+      source: "https://resolved.example/page",
+      truncated: false,
+    });
   });
 
   it("omits the title heading when the provider returns no title", async () => {
@@ -533,7 +594,7 @@ describe("web_search extension", () => {
     expect(text).toContain("Source: https://resolved.example/page");
     expect(text).toContain("Example excerpt");
     expect(text).not.toContain(SECRET_KEY);
-    expect(result.details).toBeUndefined();
+    expect(result.details).toEqual({ resultCount: 1, omitted: 0, truncated: false });
   });
 
   it("caps output at five results even if the provider returns more", async () => {
@@ -717,5 +778,210 @@ describe("web_search extension", () => {
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeoutController.abort();
     await assertion;
+  });
+});
+
+describe("web_read rendering", () => {
+  const theme = createIdentityTheme();
+
+  it("renderCall bounds a long URL to a single line preview when collapsed", () => {
+    const tool = getRegisteredTool("web_read");
+    const longUrl = `https://example.com/${"a".repeat(200)}`;
+    const component = tool.renderCall?.({ url: longUrl }, theme, { expanded: false });
+    expect(component).toBeDefined();
+    const rendered = renderText(component as RenderedText);
+    expect(rendered.split("\n").length).toBe(1);
+    expect(rendered.length).toBeLessThan(longUrl.length);
+    expect(rendered).toContain("…");
+  });
+
+  it("renderCall shows the full URL when expanded", () => {
+    const tool = getRegisteredTool("web_read");
+    const longUrl = `https://example.com/${"a".repeat(200)}`;
+    const component = tool.renderCall?.({ url: longUrl }, theme, { expanded: true });
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain(longUrl);
+  });
+
+  it("renderResult shows a compact partial state", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: "" }], details: undefined },
+      { expanded: false, isPartial: true },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toBe("Reading…");
+  });
+
+  it("renderResult shows a compact failed state without echoing result body", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: `secret leaked: ${SECRET_KEY}` }], details: undefined },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: true },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toBe("failed");
+    expect(rendered).not.toContain(SECRET_KEY);
+  });
+
+  it("renderResult expanded returns the complete unmodified content text", () => {
+    const tool = getRegisteredTool("web_read");
+    const fullText = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: fullText }], details: { source: "https://example.com", truncated: false } },
+      { expanded: true, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toBe(fullText);
+  });
+
+  it("renderResult collapsed shows title and source when a title is known", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      {
+        content: [{ type: "text", text: "body" }],
+        details: { title: "Example Title", source: "https://example.com/page", truncated: false },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain("Example Title");
+    expect(rendered).toContain("https://example.com/page");
+    expect(rendered).not.toContain("(truncated)");
+  });
+
+  it("renderResult collapsed shows only the source when the title is unknown, without inventing one", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: "body" }], details: { source: "https://example.com/page", truncated: false } },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain("https://example.com/page");
+    expect(rendered).not.toMatch(/^Example/);
+  });
+
+  it("renderResult collapsed appends a truncated marker when the result was truncated", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: "body" }], details: { source: "https://example.com/page", truncated: true } },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain("(truncated)");
+  });
+});
+
+describe("web_search rendering", () => {
+  const theme = createIdentityTheme();
+
+  it("renderCall bounds a long query to a single line preview when collapsed", () => {
+    const tool = getRegisteredTool("web_search");
+    const longQuery = "q".repeat(200);
+    const component = tool.renderCall?.({ query: longQuery }, theme, { expanded: false });
+    const rendered = renderText(component as RenderedText);
+    expect(rendered.split("\n").length).toBe(1);
+    expect(rendered.length).toBeLessThan(longQuery.length);
+    expect(rendered).toContain("…");
+  });
+
+  it("renderCall shows the full query when expanded", () => {
+    const tool = getRegisteredTool("web_search");
+    const longQuery = "q".repeat(200);
+    const component = tool.renderCall?.({ query: longQuery }, theme, { expanded: true });
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain(longQuery);
+  });
+
+  it("renderResult shows a compact partial state", () => {
+    const tool = getRegisteredTool("web_search");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: "" }], details: undefined },
+      { expanded: false, isPartial: true },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toBe("Searching…");
+  });
+
+  it("renderResult shows a compact failed state without echoing result body", () => {
+    const tool = getRegisteredTool("web_search");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: `secret leaked: ${SECRET_KEY}` }], details: undefined },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: true },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toBe("failed");
+    expect(rendered).not.toContain(SECRET_KEY);
+  });
+
+  it("renderResult expanded returns the complete unmodified content text", () => {
+    const tool = getRegisteredTool("web_search");
+    const fullText = Array.from({ length: 50 }, (_, i) => `1. Result ${i}\nSource: https://example.com/${i}`).join(
+      "\n",
+    );
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: fullText }], details: { resultCount: 50, omitted: 0, truncated: false } },
+      { expanded: true, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toBe(fullText);
+  });
+
+  it("renderResult collapsed shows only a result count, not titles/sources/excerpts", () => {
+    const tool = getRegisteredTool("web_search");
+    const bodyText = "1. Secret Title\nSource: https://example.com/secret\nSecret excerpt";
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: bodyText }], details: { resultCount: 1, omitted: 0, truncated: false } },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain("1 result");
+    expect(rendered).not.toContain("Secret Title");
+    expect(rendered).not.toContain("https://example.com/secret");
+    expect(rendered).not.toContain("Secret excerpt");
+  });
+
+  it("renderResult collapsed says 'No results' for an empty result set", () => {
+    const tool = getRegisteredTool("web_search");
+    const component = tool.renderResult?.(
+      {
+        content: [{ type: "text", text: "No search results found." }],
+        details: { resultCount: 0, omitted: 0, truncated: false },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toBe("No results");
+  });
+
+  it("renderResult collapsed reports omitted count and truncated marker", () => {
+    const tool = getRegisteredTool("web_search");
+    const component = tool.renderResult?.(
+      { content: [{ type: "text", text: "body" }], details: { resultCount: 3, omitted: 2, truncated: true } },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    const rendered = renderText(component as RenderedText);
+    expect(rendered).toContain("3 results");
+    expect(rendered).toContain("2 omitted");
+    expect(rendered).toContain("(truncated)");
   });
 });
