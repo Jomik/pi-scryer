@@ -30,7 +30,8 @@ export EXA_API_KEY=...
 ### `web_read`
 
 `web_read(url)` fetches a URL's content using Exa's provider-side retrieval and
-returns the title, resolved source, and extracted text.
+returns the resolved source and extracted text; the title is included only
+when Exa provides one.
 
 - HTTP(S) URLs only.
 - Fixed 30s timeout.
@@ -41,8 +42,9 @@ returns the title, resolved source, and extracted text.
 ### `web_search`
 
 `web_search(query)` searches the web via Exa and returns up to 5 results as
-Markdown, each with a title, source URL, and a short excerpt (up to 500
-characters).
+Markdown. Every valid result has a source URL; a title and a short excerpt
+(up to 500 characters) are included when Exa provides them. Malformed search
+entries may be omitted, and the output reports the omitted count.
 
 - Fixed result count (5) and excerpt length; no pagination or batching.
 - Fixed 30s timeout, same credential and error handling as `web_read`.
