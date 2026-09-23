@@ -74,9 +74,18 @@ source and extracted text; the title is included only when available.
   `offset` chunking; use the returned local path to read larger files. If
   cloning, authentication, or the git fetch fails for a recognized GitHub
   code URL, `web_read` throws — it never falls back to Exa
-  for these URLs. Other `github.com` URLs (issues, pulls, profile pages, etc.)
-  and all non-GitHub URLs are still fetched via Exa as described below.
-- Non-GitHub-code URLs are fetched using Exa's provider-side retrieval.
+  for these URLs. Every other GitHub-owned URL is rejected outright instead of
+  being sent to Exa: this includes `github.com` issues, pull requests, and
+  profile pages; any `github.com` subdomain (`gist.github.com`,
+  `api.github.com`, etc.); and `githubusercontent.com` / any
+  `*.githubusercontent.com` subdomain (including `raw.githubusercontent.com`),
+  since these can serve private repository content that must never be leaked
+  to a third-party content provider. `web_read` throws a clear
+  unsupported-GitHub-URL error for these instead of returning `undefined` and
+  falling through to Exa; this applies to both fresh fetches and offset-based
+  continuation requests that miss the cache. Only URLs on genuinely unrelated
+  sites are fetched via Exa.
+- Non-GitHub URLs are fetched using Exa's provider-side retrieval.
 - **Continuing long pages:** when a page's extracted text does not fit in one
   call, the response ends with a marker stating the current offset, the exact
   next offset, the total text length, and the call to make next, e.g.

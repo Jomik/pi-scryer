@@ -60,9 +60,36 @@ describe("github reader", () => {
     await cleanupCreatedDirs();
   });
 
-  it("returns undefined for non-repo GitHub URLs without invoking git", async () => {
+  it("throws (never undefined) for non-repo GitHub URLs without invoking git, to protect private data", async () => {
     const reader = createGitHubReader();
-    const result = await reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal);
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("throws for github.com subdomains and githubusercontent.com hosts without invoking git", async () => {
+    const reader = createGitHubReader();
+    await expect(reader.read("https://gist.github.com/octocat/abc123", new AbortController().signal)).rejects.toThrow(
+      "github: unsupported GitHub URL",
+    );
+    await expect(
+      reader.read("https://raw.githubusercontent.com/octocat/hello-world/main/README.md", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      reader.read("https://githubusercontent.com/octocat/hello-world", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("does not treat lookalike domains as GitHub-owned", async () => {
+    const reader = createGitHubReader();
+    const result = await reader.read(
+      "https://github.com.evil.example/octocat/hello-world",
+      new AbortController().signal,
+    );
     expect(result).toBeUndefined();
     expect(execFileMock).not.toHaveBeenCalled();
     await reader.cleanup();

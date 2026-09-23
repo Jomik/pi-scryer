@@ -46,12 +46,35 @@ function assertSafeSegment(segment: string): void {
   }
 }
 
+const UNSUPPORTED_GITHUB_URL_MESSAGE =
+  "github: unsupported GitHub URL — rejected to protect private data. Only repo root, /tree/<ref>[/path], /blob/<ref>/path, and /commit/<sha> URLs on github.com can be read; this includes github.com subdomains (gist, api, ...) and githubusercontent.com.";
+
 /**
- * Parses a URL as a GitHub code reference. Returns undefined for URLs that
- * are not on github.com/www.github.com, or that are github.com URLs but do
- * not address a repository's code (profile pages, issues, pulls, etc.).
- * Throws for github.com repo-code-shaped URLs that are otherwise malformed
- * (credentials, custom port, invalid owner/repo, traversal, missing ref).
+ * True for github.com, any *.github.com subdomain, githubusercontent.com,
+ * and any *.githubusercontent.com subdomain. Uses exact-match/dot-suffix
+ * checks on the lowercased hostname so lookalike domains such as
+ * "github.com.evil.example" are not matched.
+ */
+function isGitHubOwnedHost(host: string): boolean {
+  return (
+    host === "github.com" ||
+    host.endsWith(".github.com") ||
+    host === "githubusercontent.com" ||
+    host.endsWith(".githubusercontent.com")
+  );
+}
+
+/**
+ * Parses a URL as a GitHub code reference. Returns undefined only for URLs
+ * that are not GitHub-owned at all. For any GitHub-owned host (github.com,
+ * any *.github.com subdomain, githubusercontent.com, any
+ * *.githubusercontent.com subdomain) that does not address a supported
+ * repository code reference (profile pages, issues, pulls, raw content,
+ * gist/api subdomains, etc.), this throws instead of returning undefined so
+ * callers fail closed rather than fall back to a remote content provider.
+ * Also throws for github.com repo-code-shaped URLs that are otherwise
+ * malformed (credentials, custom port, invalid owner/repo, traversal,
+ * missing ref).
  */
 export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   let parsed: URL;
@@ -62,11 +85,11 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   }
 
   const host = parsed.hostname.toLowerCase();
-  if (host !== "github.com" && host !== "www.github.com") {
+  if (!isGitHubOwnedHost(host)) {
     return undefined;
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return undefined;
+    throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
   if (parsed.username.length > 0 || parsed.password.length > 0) {
     throw new Error("github: URL must not contain credentials");
@@ -74,10 +97,16 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   if (parsed.port.length > 0) {
     throw new Error("github: URL must not specify a custom port");
   }
+  if (host !== "github.com" && host !== "www.github.com") {
+    // Other GitHub-owned hosts (gist.github.com, api.github.com,
+    // raw.githubusercontent.com, githubusercontent.com, ...) never address a
+    // clonable repository code reference.
+    throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
+  }
 
   const rawSegments = parsed.pathname.split("/").filter((segment) => segment.length > 0);
   if (rawSegments.length < 2) {
-    return undefined;
+    throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
 
   let segments: string[];
@@ -105,7 +134,7 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
 
   const kind = segments[2];
   if (kind !== "tree" && kind !== "blob" && kind !== "commit") {
-    return undefined;
+    throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
 
   if (kind === "commit") {

@@ -988,28 +988,88 @@ describe("web_read GitHub routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("still uses Exa for a non-code GitHub URL (issues)", async () => {
+  it("blocks a non-code GitHub URL (issues) from ever reaching Exa, failing closed", async () => {
     const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse({
-        results: [{ title: "Issue", url: "https://github.com/octocat/hello-world/issues/1", text: "issue body text" }],
-      }),
-    );
+    const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await tool.execute(
-      "call-1",
-      { url: "https://github.com/octocat/hello-world/issues/1" },
-      new AbortController().signal,
-      noop,
-      {},
-    );
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://github.com/octocat/hello-world/issues/1" },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
       false,
     );
-    expect(result.content[0].text).toContain("issue body text");
+  });
+
+  it("blocks a private pull request URL from ever reaching Exa, failing closed", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://github.com/octocat/private-repo/pull/7" },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
+      false,
+    );
+  });
+
+  it("blocks a raw.githubusercontent.com URL from ever reaching Exa, failing closed", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://raw.githubusercontent.com/octocat/private-repo/main/secrets.txt" },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
+      false,
+    );
+  });
+
+  it("blocks a raw.githubusercontent.com URL from reaching Exa on a fresh offset>0 request (cache miss)", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://raw.githubusercontent.com/octocat/private-repo/main/secrets.txt", offset: 10 },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
+      false,
+    );
   });
 
   it("still uses Exa for a non-GitHub URL", async () => {
