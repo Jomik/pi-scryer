@@ -655,15 +655,25 @@ describe("web_read rendering", () => {
   it("renderCall includes the offset when nonzero, collapsed and expanded", () => {
     const tool = getRegisteredTool("web_read");
     const url = "https://example.com/page";
+    const callTheme = createIdentityTheme();
 
-    const expandedZero = tool.renderCall?.({ url, offset: 0 }, theme, { expanded: true });
+    const expandedZero = tool.renderCall?.({ url, offset: 0 }, callTheme, { expanded: true });
     expect(renderText(expandedZero as RenderedText)).not.toContain("offset");
 
-    const expanded = tool.renderCall?.({ url, offset: 4096 }, theme, { expanded: true });
-    expect(renderText(expanded as RenderedText)).toContain("4096");
+    const warning = vi.spyOn(callTheme, "fg");
+    const expanded = tool.renderCall?.({ url, offset: 4096 }, callTheme, { expanded: true });
+    expect(renderText(expanded as RenderedText)).toContain(`${url} (offset: 4096)`);
 
-    const collapsed = tool.renderCall?.({ url, offset: 4096 }, theme, { expanded: false });
-    expect(renderText(collapsed as RenderedText)).toContain("4096");
+    const collapsed = tool.renderCall?.({ url: `${url}/${"a".repeat(200)}`, offset: 4096 }, callTheme, {
+      expanded: false,
+    });
+    const rendered = renderText(collapsed as RenderedText, 60);
+    expect(rendered).toContain("https://example.com/page/");
+    expect(rendered).toContain("…");
+    expect(rendered).toContain(" (offset: 4096)");
+    expect(rendered.indexOf("…")).toBeLessThan(rendered.indexOf(" (offset: 4096)"));
+    expect(visibleWidth(rendered)).toBeLessThanOrEqual(60);
+    expect(warning).toHaveBeenCalledWith("warning", " (offset: 4096)");
   });
 
   it("renderResult shows a compact partial state", () => {
@@ -765,8 +775,27 @@ describe("web_read rendering", () => {
       { isError: false },
     );
     const rendered = renderText(component as RenderedText);
-    expect(rendered).toContain("more");
-    expect(rendered).toContain("12345");
+    expect(rendered).toContain("https://example.com/page (more: offset 12345)");
+    expect(rendered).toContain("offsets 0-12344 of 99999");
+    expect(renderText(component as RenderedText, 60)).toContain("https://example.com/page");
+    const narrow = renderText(component as RenderedText, 40);
+    expect(narrow).toContain("https://example");
+    expect(narrow).toContain(" (more: offset 12345)");
+    expect(visibleWidth(narrow)).toBeLessThanOrEqual(40);
     expect(rendered).not.toContain("body");
+  });
+
+  it("renderResult collapsed shows the returned range on the final continuation", () => {
+    const tool = getRegisteredTool("web_read");
+    const component = tool.renderResult?.(
+      {
+        content: [{ type: "text", text: "body" }],
+        details: { source: "https://example.com/page", truncated: false, offset: 12345, totalLength: 12349 },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(renderText(component as RenderedText)).toContain("offsets 12345-12348 of 12349");
   });
 });
