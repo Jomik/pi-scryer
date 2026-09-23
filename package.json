@@ -1,6 +1,6 @@
 {
   "name": "pi-scryer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packageManager": "npm@11.12.1",
   "description": "Minimal Exa web access for pi.",
   "license": "MIT",
