@@ -12,11 +12,15 @@ const REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 export interface GitHubReader {
-  read(url: string, signal: AbortSignal): Promise<ExaContentResult | undefined>;
+  read(url: string, signal: AbortSignal | undefined): Promise<ExaContentResult | undefined>;
   cleanup(): Promise<void>;
 }
 
-type ParsedTarget = { kind: "root" } | { kind: "tree"; refAndPath: string[] } | { kind: "blob"; refAndPath: string[] };
+type ParsedTarget =
+  | { kind: "root" }
+  | { kind: "tree"; refAndPath: string[] }
+  | { kind: "blob"; refAndPath: string[] }
+  | { kind: "commit"; sha: string };
 
 interface ParsedGitHubUrl {
   owner: string;
@@ -100,8 +104,16 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   }
 
   const kind = segments[2];
-  if (kind !== "tree" && kind !== "blob") {
+  if (kind !== "tree" && kind !== "blob" && kind !== "commit") {
     return undefined;
+  }
+
+  if (kind === "commit") {
+    const commitSegments = segments.slice(3);
+    if (commitSegments.length !== 1 || !SHA_PATTERN.test(commitSegments[0])) {
+      throw new Error("github: commit URL must reference a single full commit SHA");
+    }
+    return { owner, repo, target: { kind: "commit", sha: commitSegments[0].toLowerCase() } };
   }
 
   const refAndPath = segments.slice(3);
@@ -230,7 +242,7 @@ async function readBlobText(cloneDir: string, realRoot: string, filePath: string
   const truncated = info.size > MAX_BLOB_BYTES;
   const content = buffer.subarray(0, bytesRead).toString("utf-8");
   const relPath = relative(realRoot, filePath);
-  const header = `Repository clone root: ${cloneDir}\nFile: ${relPath}\n\n`;
+  const header = `Repository clone root: ${cloneDir}\nFile: ${relPath}\nLocal path: ${filePath}\n\n`;
   return truncated
     ? `${header}${content}\n\n[truncated at ${MAX_BLOB_BYTES} bytes of ${info.size}]`
     : `${header}${content}`;
@@ -253,7 +265,7 @@ async function readTreeListing(cloneDir: string, realRoot: string, dirPath: stri
       return `${type}  ${entry.name}`;
     });
   const relPath = relative(realRoot, dirPath) || ".";
-  const header = `Repository clone root: ${cloneDir}\nPath: ${relPath}\n\n`;
+  const header = `Repository clone root: ${cloneDir}\nPath: ${relPath}\nLocal path: ${dirPath}\n\n`;
   return `${header}${lines.length > 0 ? lines.join("\n") : "(empty directory)"}`;
 }
 
@@ -268,7 +280,18 @@ export function createGitHubReader(): GitHubReader {
   const cloneDirs = new Map<string, string>();
   const cloneLocks = new Map<string, Promise<string>>();
   const refsCache = new Map<string, Promise<string[]>>();
+  const pendingClones = new Set<Promise<void>>();
   let parentDirPromise: Promise<string> | undefined;
+  let closed = false;
+
+  function trackPending(promise: Promise<unknown>): void {
+    const settled = promise.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingClones.add(settled);
+    settled.finally(() => pendingClones.delete(settled));
+  }
 
   function getParentDir(): Promise<string> {
     if (!parentDirPromise) {
@@ -280,7 +303,7 @@ export function createGitHubReader(): GitHubReader {
     return parentDirPromise;
   }
 
-  function listRemoteRefs(remote: string, repoKey: string, signal: AbortSignal): Promise<string[]> {
+  function listRemoteRefs(remote: string, repoKey: string, signal: AbortSignal | undefined): Promise<string[]> {
     let cached = refsCache.get(repoKey);
     if (!cached) {
       cached = execGit(["ls-remote", "--heads", "--tags", remote], { signal })
@@ -298,7 +321,7 @@ export function createGitHubReader(): GitHubReader {
     refAndPath: string[],
     remote: string,
     repoKey: string,
-    signal: AbortSignal,
+    signal: AbortSignal | undefined,
   ): Promise<{ refKind: "sha" | "ref"; ref: string; pathSegments: string[] }> {
     const first = refAndPath[0];
     if (SHA_PATTERN.test(first)) {
@@ -326,11 +349,15 @@ export function createGitHubReader(): GitHubReader {
     refKind: "sha" | "ref" | "default",
     ref: string | undefined,
     remote: string,
-    signal: AbortSignal,
+    signal: AbortSignal | undefined,
   ): Promise<string> {
     const cached = cloneDirs.get(cacheKey);
     if (cached) {
       return cached;
+    }
+
+    if (closed) {
+      throw new Error("github: reader is closed");
     }
 
     let inFlight = cloneLocks.get(cacheKey);
@@ -358,15 +385,19 @@ export function createGitHubReader(): GitHubReader {
           cloneLocks.delete(cacheKey);
         }
       })();
+      trackPending(inFlight);
       cloneLocks.set(cacheKey, inFlight);
     }
     return inFlight;
   }
 
-  async function read(url: string, signal: AbortSignal): Promise<ExaContentResult | undefined> {
+  async function read(url: string, signal: AbortSignal | undefined): Promise<ExaContentResult | undefined> {
     const parsed = parseGitHubUrl(url);
     if (!parsed) {
       return undefined;
+    }
+    if (closed) {
+      throw new Error("github: reader is closed");
     }
     const { owner, repo, target } = parsed;
     const remote = remoteUrl(owner, repo);
@@ -385,6 +416,13 @@ export function createGitHubReader(): GitHubReader {
       if (isBlob && pathSegments.length === 0) {
         throw new Error("github: blob URL must include a file path");
       }
+    } else if (target.kind === "commit") {
+      refKind = "sha";
+      ref = target.sha;
+    }
+
+    if (closed) {
+      throw new Error("github: reader is closed");
     }
 
     const cacheKey = `${repoKey}::${refKind}::${ref ?? "default"}`;
@@ -405,6 +443,8 @@ export function createGitHubReader(): GitHubReader {
   }
 
   async function cleanup(): Promise<void> {
+    closed = true;
+    await Promise.allSettled([...pendingClones]);
     const dirs = [...cloneDirs.values()];
     cloneDirs.clear();
     for (const dir of dirs) {

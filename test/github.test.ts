@@ -275,4 +275,149 @@ describe("github reader", () => {
 
     await reader.cleanup();
   });
+
+  it("resolves a /commit/<sha> URL by shallow-fetching the exact SHA and returning the root checkout listing", async () => {
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdDirs.add(dir);
+        if (args[0] === "checkout") {
+          await writeFile(join(dir, "README.md"), "hello");
+        }
+        callback(null, "", "");
+      },
+    );
+    const sha = "b".repeat(40);
+    const reader = createGitHubReader();
+
+    const result = await reader.read(
+      `https://github.com/octocat/hello-world/commit/${sha}`,
+      new AbortController().signal,
+    );
+
+    const gitCalls = calls().map((call) => call[1]);
+    expect(gitCalls[0]).toEqual(["init", expect.any(String)]);
+    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "git@github.com:octocat/hello-world.git"]);
+    expect(gitCalls[2]).toEqual(["fetch", "--depth", "1", "origin", sha]);
+    expect(gitCalls[3]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
+    expect(gitCalls.some((args) => args[0] === "ls-remote")).toBe(false);
+    expect(gitCalls.some((args) => args[0] === "clone")).toBe(false);
+    expect(result?.title).toBe(`octocat/hello-world@${sha}`);
+    expect(result?.text).toContain("README.md");
+
+    await reader.cleanup();
+  });
+
+  it("rejects malformed /commit/ URLs instead of falling back to Exa", async () => {
+    const reader = createGitHubReader();
+
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/commit/not-a-sha", new AbortController().signal),
+    ).rejects.toThrow("commit URL must reference a single full commit SHA");
+    await expect(
+      reader.read(
+        `https://github.com/octocat/hello-world/commit/${"c".repeat(40)}/extra`,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("commit URL must reference a single full commit SHA");
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/commit/", new AbortController().signal),
+    ).rejects.toThrow("commit URL must reference a single full commit SHA");
+    expect(execFileMock).not.toHaveBeenCalled();
+
+    await reader.cleanup();
+  });
+
+  it("includes the absolute local path of the requested file/directory in blob and tree results", async () => {
+    mockGitSuccess({
+      refs: ["main"],
+      fixture: async (dir) => {
+        await mkdir(join(dir, "src"));
+        await writeFile(join(dir, "src", "index.ts"), "export {};");
+      },
+    });
+
+    const reader = createGitHubReader();
+
+    const treeResult = await reader.read(
+      "https://github.com/octocat/hello-world/tree/main/src",
+      new AbortController().signal,
+    );
+    expect(treeResult?.text).toMatch(/Local path: .*\/src\b/);
+
+    const blobResult = await reader.read(
+      "https://github.com/octocat/hello-world/blob/main/src/index.ts",
+      new AbortController().signal,
+    );
+    expect(blobResult?.text).toMatch(/Local path: .*\/src\/index\.ts\b/);
+
+    await reader.cleanup();
+  });
+
+  it("awaits an in-flight clone before removing directories on cleanup(), avoiding a leaked directory", async () => {
+    let releaseClone: (() => void) | undefined;
+    const cloneGate = new Promise<void>((resolvePromise) => {
+      releaseClone = resolvePromise;
+    });
+
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdDirs.add(dir);
+        if (args[0] === "clone") {
+          await cloneGate;
+          await writeFile(join(dir, "README.md"), "hi");
+        }
+        callback(null, "", "");
+      },
+    );
+
+    const reader = createGitHubReader();
+    const readPromise = reader.read("https://github.com/octocat/hello-world", new AbortController().signal);
+
+    // Give the clone a tick to start (mkdtemp + reach the gated clone call).
+    await new Promise((r) => setTimeout(r, 10));
+
+    const cleanupPromise = reader.cleanup();
+    releaseClone?.();
+
+    const [result] = await Promise.all([readPromise, cleanupPromise]);
+    expect(result).toBeDefined();
+
+    const cloneDir = calls()
+      .find((call) => call[1][0] === "clone")?.[1]
+      .slice(-1)[0] as string;
+    await expect(stat(cloneDir)).rejects.toThrow();
+  });
+
+  it("rejects a new read after cleanup() even if it was awaiting ref resolution when cleanup started", async () => {
+    let releaseLsRemote: (() => void) | undefined;
+    const lsRemoteGate = new Promise<void>((resolvePromise) => {
+      releaseLsRemote = resolvePromise;
+    });
+
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdDirs.add(dir);
+        if (args[0] === "ls-remote") {
+          await lsRemoteGate;
+          callback(null, "abc123\trefs/heads/main", "");
+          return;
+        }
+        callback(null, "", "");
+      },
+    );
+
+    const reader = createGitHubReader();
+    const readPromise = reader.read("https://github.com/octocat/hello-world/tree/main", new AbortController().signal);
+
+    await new Promise((r) => setTimeout(r, 10));
+    const cleanupPromise = reader.cleanup();
+    releaseLsRemote?.();
+
+    await expect(readPromise).rejects.toThrow("github: reader is closed");
+    await cleanupPromise;
+    expect(calls().some((call) => call[1][0] === "clone")).toBe(false);
+  });
 });

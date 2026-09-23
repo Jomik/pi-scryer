@@ -879,6 +879,19 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("README.md");
   });
 
+  it("routes a repo root URL with an undefined signal, returning a local path and never calling Exa", async () => {
+    mockGitSuccess();
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute("call-1", { url: "https://github.com/octocat/hello-world" }, undefined, noop, {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).toContain("README.md");
+  });
+
   it("routes a /tree/<ref> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
     execFileMock.mockImplementation(
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {

@@ -61,15 +61,16 @@ source and extracted text; the title is included only when available.
   and `/commit/<sha>` URLs on `github.com` are read directly by shallow-cloning
   the repository over SSH (`git@github.com:owner/repo.git`) instead of going
   through Exa — content is never sent to Exa for these URLs. This requires a
-  working SSH agent for GitHub (`SSH_AUTH_SOCK` set and an authorized key) for
-  private repositories; public repos work with unauthenticated SSH access.
+  working SSH agent for GitHub (`SSH_AUTH_SOCK` set and an authorized key)
+  registered with GitHub — SSH access requires a registered key for every
+  repository, including public ones; there is no unauthenticated SSH access.
   Clones are shallow and cached per-repository/ref for the lifetime of the
   process, under a stable `/tmp/pi-scryer` root with a unique per-clone child
   directory; only the child directories created by this process are removed
   on graceful shutdown, and the stable root itself is left in place. A
-  `/commit/<sha>` URL always does a fresh shallow fetch of that exact SHA (not
-  cached across ref names), so repeated reads of different commits each incur
-  a new fetch. If cloning, authentication, or the git fetch fails for a
+  `/commit/<sha>` URL reuses this reader's cached clone if that exact SHA was
+  already fetched; a different commit SHA (or repository) triggers a fresh
+  shallow fetch of that SHA. If cloning, authentication, or the git fetch fails for a
   recognized GitHub code URL, `web_read` throws — it never falls back to Exa
   for these URLs. Other `github.com` URLs (issues, pulls, profile pages, etc.)
   and all non-GitHub URLs are still fetched via Exa as described below.
