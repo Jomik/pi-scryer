@@ -2,7 +2,7 @@
   "name": "pi-scryer",
   "version": "0.1.0",
   "packageManager": "npm@11.12.1",
-  "description": "Scaffold for a pi extension (in progress).",
+  "description": "Minimal Exa web access for pi.",
   "license": "MIT",
   "author": "Jonas Damtoft",
   "repository": {
@@ -14,7 +14,8 @@
     "pi",
     "agent",
     "tools",
-    "scaffold"
+    "exa",
+    "web"
   ],
   "type": "module",
   "files": [
@@ -32,14 +33,18 @@
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "format": "biome format --write",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.85.1"
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-tui": ">=0.85.1",
+    "typebox": "^1.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.15",
     "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-tui": ">=0.85.1",
+    "typebox": "^1.1.31",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }
