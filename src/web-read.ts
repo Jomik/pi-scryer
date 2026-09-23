@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, defineTool, truncateHead } from "@earendil-works/pi-coding-agent";
-import { Text, TruncatedText } from "@earendil-works/pi-tui";
+import { Text, TruncatedText, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { ContinuationCache } from "./continuation-cache";
 import { type ExaContentResult, fetchExaContent, isHttpUrl, isNonEmptyString, truncateForDisplay } from "./exa";
@@ -77,15 +77,18 @@ export function createWebReadTool(cache: ContinuationCache) {
       const title = theme.fg("toolTitle", theme.bold("web_read "));
       const url = typeof args?.url === "string" ? args.url : "";
       const offset = typeof args?.offset === "number" && args.offset > 0 ? args.offset : undefined;
+      const suffix = offset !== undefined ? theme.fg("warning", ` (offset: ${offset})`) : "";
       if (context.expanded) {
-        const suffix = offset !== undefined ? theme.fg("dim", ` (offset: ${offset})`) : "";
         return new Text(`${title}${theme.fg("accent", url)}${suffix}`, 0, 0);
       }
-      const display = truncateForDisplay(
-        offset !== undefined ? `${url} (offset: ${offset})` : url,
-        CALL_PREVIEW_MAX_CHARS,
-      );
-      return new TruncatedText(`${title}${theme.fg("accent", display)}`, 0, 0);
+      const display = truncateForDisplay(url, CALL_PREVIEW_MAX_CHARS);
+      return {
+        render(width: number) {
+          const preview = truncateToWidth(display, Math.max(1, width - visibleWidth(title + suffix)), "…");
+          return new TruncatedText(`${title}${theme.fg("accent", preview)}${suffix}`, 0, 0).render(width);
+        },
+        invalidate() {},
+      };
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       if (isPartial) {
@@ -107,13 +110,24 @@ export function createWebReadTool(cache: ContinuationCache) {
         return new TruncatedText(theme.fg("muted", "done"), 0, 0);
       }
 
-      const base = details.title ? `${details.title} \u2014 ${details.source}` : details.source;
-      let line = theme.fg("muted", truncateForDisplay(base, DISPLAY_LINE_MAX_CHARS));
-      if (details.truncated) {
-        const continuation = details.nextOffset !== undefined ? `more: offset ${details.nextOffset}` : "more";
-        line += theme.fg("dim", ` (${continuation})`);
-      }
-      return new TruncatedText(line, 0, 0);
+      const base = truncateForDisplay(
+        details.title ? `${details.title} \u2014 ${details.source}` : details.source,
+        DISPLAY_LINE_MAX_CHARS,
+      );
+      const more = details.nextOffset !== undefined ? theme.fg("warning", ` (more: offset ${details.nextOffset})`) : "";
+      const range =
+        details.offset > 0 || details.truncated
+          ? ` (offsets ${details.offset}-${(details.nextOffset ?? details.totalLength) - 1} of ${details.totalLength})`
+          : "";
+      return {
+        render(width: number) {
+          const preview = truncateToWidth(base, Math.max(1, width - visibleWidth(more)), "…");
+          const summary = theme.fg("muted", preview) + more;
+          const rangeLabel = visibleWidth(summary + range) <= width ? theme.fg("dim", range) : "";
+          return new TruncatedText(summary + rangeLabel, 0, 0).render(width);
+        },
+        invalidate() {},
+      };
     },
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const rawUrl = typeof params?.url === "string" ? params.url.trim() : "";
