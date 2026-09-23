@@ -70,8 +70,10 @@ source and extracted text; the title is included only when available.
   on graceful shutdown, and the stable root itself is left in place. A
   `/commit/<sha>` URL reuses this reader's cached clone if that exact SHA was
   already fetched; a different commit SHA (or repository) triggers a fresh
-  shallow fetch of that SHA. If cloning, authentication, or the git fetch fails for a
-  recognized GitHub code URL, `web_read` throws — it never falls back to Exa
+  shallow fetch of that SHA. Blob content is capped at 100,000 bytes before
+  `offset` chunking; use the returned local path to read larger files. If
+  cloning, authentication, or the git fetch fails for a recognized GitHub
+  code URL, `web_read` throws — it never falls back to Exa
   for these URLs. Other `github.com` URLs (issues, pulls, profile pages, etc.)
   and all non-GitHub URLs are still fetched via Exa as described below.
 - Non-GitHub-code URLs are fetched using Exa's provider-side retrieval.
