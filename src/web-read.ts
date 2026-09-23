@@ -55,8 +55,10 @@ function takeUtf8BytePrefix(text: string, maxBytes: number): string {
  * Creates the web_read tool definition, bound to the given continuation
  * cache instance and GitHub reader. GitHub code URLs (repo root, tree,
  * blob, commit) are served by cloning over SSH via `githubReader`, never
- * touching Exa; a recognized-but-failing GitHub code URL throws instead of
- * falling back to Exa. All other URLs (including non-code GitHub pages)
+ * touching Exa; GitHub issue/pull request URLs are served by an
+ * authenticated `gh issue view`/`gh pr view` call instead, also never
+ * touching Exa. A recognized-but-failing GitHub URL throws instead of
+ * falling back to Exa. All other URLs (including unsupported GitHub pages)
  * fall through to Exa as before.
  */
 export function createWebReadTool(cache: ContinuationCache, githubReader: GitHubReader) {
@@ -64,7 +66,7 @@ export function createWebReadTool(cache: ContinuationCache, githubReader: GitHub
     name: "web_read",
     label: "Read Web Page",
     description:
-      "Fetch and read the content of a web page as Markdown. Output is truncated to 2000 lines or 50KB (whichever is hit first), keeping the beginning of the content. Pass the offset value returned by a previous call to continue reading a long page; omit or use 0 to fetch fresh content from the start.",
+      "Fetch and read the content of a web page as Markdown. Output is truncated to 2000 lines or 50KB (whichever is hit first), keeping the beginning of the content. GitHub code, issue, and pull request URLs are read directly via the authenticated `gh` CLI instead of a third-party provider; other GitHub URLs (e.g. profile pages) are rejected instead of being sent to that provider. Pass the offset value returned by a previous call to continue reading a long page; omit or use 0 to fetch fresh content from the start.",
     parameters: Type.Object(
       {
         url: Type.String({ description: "Absolute http(s) URL to read.", minLength: 1 }),

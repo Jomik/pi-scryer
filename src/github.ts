@@ -10,6 +10,9 @@ const MAX_BLOB_BYTES = 100_000;
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
+// Decimal positive integer with no leading zero, sign, or non-digit
+// characters; matches gh CLI's accepted issue/PR number shape.
+const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
 
 export interface GitHubReader {
   read(url: string, signal: AbortSignal | undefined): Promise<ExaContentResult | undefined>;
@@ -20,7 +23,9 @@ type ParsedTarget =
   | { kind: "root" }
   | { kind: "tree"; refAndPath: string[] }
   | { kind: "blob"; refAndPath: string[] }
-  | { kind: "commit"; sha: string };
+  | { kind: "commit"; sha: string }
+  | { kind: "issue"; number: string }
+  | { kind: "pull"; number: string };
 
 interface ParsedGitHubUrl {
   owner: string;
@@ -65,21 +70,30 @@ function isGitHubOwnedHost(host: string): boolean {
 }
 
 /**
- * Parses a URL as a GitHub code reference. Returns undefined only for URLs
- * that are not GitHub-owned at all. For any GitHub-owned host (github.com,
- * any *.github.com subdomain, githubusercontent.com, any
- * *.githubusercontent.com subdomain) that does not address a supported
- * repository code reference (profile pages, issues, pulls, gist/api
- * subdomains, non-raw githubusercontent.com hosts, etc.), this throws
- * instead of returning undefined so callers fail closed rather than fall
- * back to a remote content provider. Also throws for github.com
- * repo-code-shaped URLs that are otherwise malformed (credentials, custom
- * port, invalid owner/repo, traversal, missing ref).
+ * Parses a URL as a GitHub code reference, or as an issue/pull request
+ * reference. Returns undefined only for URLs that are not GitHub-owned at
+ * all. For any GitHub-owned host (github.com, any *.github.com subdomain,
+ * githubusercontent.com, any *.githubusercontent.com subdomain) that does
+ * not address a supported repository code reference or a supported
+ * issue/pull reference (profile pages, gist/api subdomains, non-raw
+ * githubusercontent.com hosts, etc.), this throws instead of returning
+ * undefined so callers fail closed rather than fall back to a remote
+ * content provider. Also throws for github.com repo-code-shaped URLs that
+ * are otherwise malformed (credentials, custom port, invalid owner/repo,
+ * traversal, missing ref).
  *
  * Two raw-content routes are recognized and parsed as a blob target
  * (identical ref/path resolution and reading as /blob/<ref>/path):
  * raw.githubusercontent.com/OWNER/REPO/<ref>/<path> and
  * github.com/OWNER/REPO/raw/<ref>/<path> (also www.github.com).
+ *
+ * github.com/OWNER/REPO/issues/<n> and github.com/OWNER/REPO/pull/<n>
+ * (also www.github.com) are recognized as issue/pull targets when the path
+ * has exactly these 4 segments (an optional trailing slash and query string
+ * are fine) and <n> is a positive decimal integer with no leading zero,
+ * sign, or extra characters; anything else under /issues/ or /pull/
+ * (extra segments, non-numeric or malformed numbers) throws instead of
+ * falling back.
  */
 export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   let parsed: URL;
@@ -150,6 +164,19 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   }
 
   const kind = segments[2];
+  if (kind === "issues" || kind === "pull") {
+    // Exactly 4 path segments (owner, repo, issues|pull, number): reject
+    // extra segments (e.g. /pull/5/files) rather than trying to parse a
+    // partial match.
+    if (segments.length !== 4 || !POSITIVE_INTEGER_PATTERN.test(segments[3])) {
+      throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
+    }
+    return {
+      owner,
+      repo,
+      target: { kind: kind === "issues" ? "issue" : "pull", number: segments[3] },
+    };
+  }
   if (kind !== "tree" && kind !== "blob" && kind !== "commit" && kind !== "raw") {
     throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
@@ -368,7 +395,11 @@ async function readTreeListing(cloneDir: string, realRoot: string, dirPath: stri
  * authenticated via `gh auth git-credential`, so only the single requested
  * commit (not the default branch) is ever transferred. Reuses successful
  * clones for the same repository/ref within this reader instance, and
- * removes only the local clone directories it created on cleanup().
+ * removes only the local clone directories it created on cleanup(). Issue
+ * and pull request URLs never clone or fetch anything: they are read
+ * directly via `gh issue view`/`gh pr view --json title,body,comments,url`,
+ * returning only general issue/PR comments (inline review comment threads
+ * on a pull request's diff are not included).
  */
 export function createGitHubReader(): GitHubReader {
   const cloneDirs = new Map<string, string>();
@@ -499,6 +530,27 @@ export function createGitHubReader(): GitHubReader {
       throw new Error("github: reader is closed");
     }
     const { owner, repo, target } = parsed;
+
+    if (target.kind === "issue" || target.kind === "pull") {
+      const { stdout } = await execGh(
+        [
+          target.kind === "issue" ? "issue" : "pr",
+          "view",
+          target.number,
+          "--repo",
+          `${owner}/${repo}`,
+          "--json",
+          "title,body,comments,url",
+        ],
+        { signal },
+      );
+      const text = stdout.trim();
+      if (text.length === 0) {
+        throw new Error("github: gh returned no content for this issue or pull request");
+      }
+      return { url, title: `${owner}/${repo}#${target.number}`, text };
+    }
+
     const remote = remoteUrl(owner, repo);
     const repoKey = `${owner}/${repo}`;
 

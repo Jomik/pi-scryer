@@ -73,9 +73,116 @@ describe("github reader", () => {
   it("throws (never undefined) for non-repo GitHub URLs without invoking git, to protect private data", async () => {
     const reader = createGitHubReader();
     await expect(
-      reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal),
+      reader.read("https://github.com/octocat/hello-world/settings", new AbortController().signal),
     ).rejects.toThrow("github: unsupported GitHub URL");
     expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("throws for issue/pull URLs with extra segments or malformed numbers, without invoking gh", async () => {
+    const reader = createGitHubReader();
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/not-a-number", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/pull/5/files", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/-1", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/01", new AbortController().signal),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("reads an issue via `gh issue view` with a discrete argv, never cloning or fetching", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        callback(
+          null,
+          JSON.stringify({ title: "Bug", body: "It broke", comments: [{ body: "me too" }], url: "x" }),
+          "",
+        );
+      },
+    );
+
+    const reader = createGitHubReader();
+    const result = await reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal);
+
+    expect(result?.title).toBe("octocat/hello-world#42");
+    expect(result?.url).toBe("https://github.com/octocat/hello-world/issues/42");
+    expect(result?.text).toContain("me too");
+
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0][1]).toEqual([
+      "issue",
+      "view",
+      "42",
+      "--repo",
+      "octocat/hello-world",
+      "--json",
+      "title,body,comments,url",
+    ]);
+
+    await reader.cleanup();
+  });
+
+  it("reads a pull request via `gh pr view` with a discrete argv, never cloning or fetching", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        callback(null, JSON.stringify({ title: "Fix", body: "desc", comments: [{ body: "lgtm" }], url: "x" }), "");
+      },
+    );
+
+    const reader = createGitHubReader();
+    const result = await reader.read("https://github.com/octocat/hello-world/pull/7", new AbortController().signal);
+
+    expect(result?.title).toBe("octocat/hello-world#7");
+    expect(result?.text).toContain("lgtm");
+
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0][1]).toEqual([
+      "pr",
+      "view",
+      "7",
+      "--repo",
+      "octocat/hello-world",
+      "--json",
+      "title,body,comments,url",
+    ]);
+
+    await reader.cleanup();
+  });
+
+  it("throws a sanitized error when gh fails for an issue/pull URL, without falling back", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        callback(new Error("gh failed"), "", "raw stderr should not leak");
+      },
+    );
+
+    const reader = createGitHubReader();
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal),
+    ).rejects.toThrow("github: gh command failed");
+
+    await reader.cleanup();
+  });
+
+  it("throws when gh returns empty stdout for an issue/pull URL, without falling back", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: ExecFileCallback) => {
+        callback(null, "", "");
+      },
+    );
+
+    const reader = createGitHubReader();
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/issues/42", new AbortController().signal),
+    ).rejects.toThrow("github: gh returned no content for this issue or pull request");
+
     await reader.cleanup();
   });
 

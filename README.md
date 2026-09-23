@@ -91,9 +91,21 @@ source and extracted text; the title is included only when available.
   files.
   If cloning, authentication, or the git fetch fails for a recognized GitHub
   code URL, `web_read` throws — it never falls back to Exa
-  for these URLs. Every other GitHub-owned URL is rejected outright instead of
-  being sent to Exa: this includes `github.com` issues, pull requests, and
-  profile pages; any `github.com` subdomain (`gist.github.com`,
+  for these URLs.
+- **GitHub issue/pull request URLs:** `github.com/OWNER/REPO/issues/<n>` and
+  `github.com/OWNER/REPO/pull/<n>` (also `www.github.com`; exactly these 4
+  path segments, an optional trailing slash or query string is fine, `<n>` a
+  positive decimal integer) are read directly via the authenticated `gh` CLI
+  (`gh issue view`/`gh pr view --repo OWNER/REPO --json
+  title,body,comments,url`) — no clone, no temporary directory, and no Exa
+  call is ever made for these URLs. Only the issue/PR's title, body, and
+  general (top-level) comments are included; inline pull request review
+  comment threads on the diff are not fetched. If `gh` is missing, fails, or
+  returns no content, `web_read` throws — it never falls back to Exa.
+- Every other GitHub-owned URL is rejected outright instead of
+  being sent to Exa: this includes other `github.com` paths such as
+  malformed issue/pull URLs (extra segments, non-numeric or malformed
+  numbers) and profile pages; any `github.com` subdomain (`gist.github.com`,
   `api.github.com`, etc.); and `githubusercontent.com` / any other
   `*.githubusercontent.com` subdomain (`raw.githubusercontent.com` is the one
   supported exception, handled above),

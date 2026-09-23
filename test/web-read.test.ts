@@ -997,7 +997,77 @@ describe("web_read GitHub routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("blocks a non-code GitHub URL (issues) from ever reaching Exa, failing closed", async () => {
+  it("routes an issue URL via mocked `gh issue view`, returning general comments and never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        createdGitDirs.clear();
+        callback(
+          null,
+          JSON.stringify({ title: "Bug", body: "It broke", comments: [{ body: "me too" }], url: "x" }),
+          "",
+        );
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/hello-world/issues/42" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("me too");
+    expect(gitCalls()).toHaveLength(1);
+    expect(gitCalls()[0][1]).toEqual([
+      "issue",
+      "view",
+      "42",
+      "--repo",
+      "octocat/hello-world",
+      "--json",
+      "title,body,comments,url",
+    ]);
+  });
+
+  it("routes a pull request URL via mocked `gh pr view`, returning general comments and never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        callback(null, JSON.stringify({ title: "Fix", body: "desc", comments: [{ body: "lgtm" }], url: "x" }), "");
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/private-repo/pull/7" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("lgtm");
+    expect(gitCalls()).toHaveLength(1);
+    expect(gitCalls()[0][1]).toEqual([
+      "pr",
+      "view",
+      "7",
+      "--repo",
+      "octocat/private-repo",
+      "--json",
+      "title,body,comments,url",
+    ]);
+  });
+
+  it("throws instead of falling back to Exa when `gh issue view` fails", async () => {
+    mockGitFailure();
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
@@ -1005,7 +1075,34 @@ describe("web_read GitHub routing", () => {
     await expect(
       tool.execute(
         "call-1",
-        { url: "https://github.com/octocat/hello-world/issues/1" },
+        { url: "https://github.com/octocat/hello-world/issues/42" },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks a malformed issue/pull URL (extra segment, non-numeric) from ever reaching Exa, failing closed", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://github.com/octocat/hello-world/pull/5/files" },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://github.com/octocat/hello-world/issues/not-a-number" },
         new AbortController().signal,
         noop,
         {},
@@ -1018,7 +1115,7 @@ describe("web_read GitHub routing", () => {
     ).toBe(false);
   });
 
-  it("blocks a private pull request URL from ever reaching Exa, failing closed", async () => {
+  it("blocks a non-code, non-issue/pull GitHub URL (profile page) from ever reaching Exa, failing closed", async () => {
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
@@ -1026,7 +1123,7 @@ describe("web_read GitHub routing", () => {
     await expect(
       tool.execute(
         "call-1",
-        { url: "https://github.com/octocat/private-repo/pull/7" },
+        { url: "https://github.com/octocat/hello-world/settings" },
         new AbortController().signal,
         noop,
         {},
