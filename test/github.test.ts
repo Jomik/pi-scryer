@@ -169,7 +169,7 @@ describe("github reader", () => {
     await reader.cleanup();
   });
 
-  it("resolves a 40-hex SHA via gh clone + git fetch/checkout, never using git init/remote add", async () => {
+  it("resolves a 40-hex SHA via git init + remote add + fetch --depth 1 of the exact SHA, never gh-cloning the default branch", async () => {
     mockGitSuccess();
     const sha = "a".repeat(40);
     const reader = createGitHubReader();
@@ -177,17 +177,11 @@ describe("github reader", () => {
     await reader.read(`https://github.com/octocat/hello-world/tree/${sha}`, new AbortController().signal);
 
     const gitCalls = calls().map((call) => call[1]);
-    expect(gitCalls[0]).toEqual([
-      "repo",
-      "clone",
-      "https://github.com/octocat/hello-world.git",
-      expect.any(String),
-      "--",
-      "--depth",
-      "1",
-      "--single-branch",
-    ]);
-    expect(gitCalls[1]).toEqual([
+    expect(gitCalls[0]).toEqual(["init", "--quiet", expect.any(String)]);
+    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "https://github.com/octocat/hello-world.git"]);
+    expect(gitCalls[2]).toEqual([
+      "-c",
+      "credential.helper=",
       "-c",
       "credential.helper=!gh auth git-credential",
       "fetch",
@@ -196,12 +190,11 @@ describe("github reader", () => {
       "origin",
       sha,
     ]);
-    expect(gitCalls[2]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
+    expect(gitCalls[3]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
     // No ls-remote / API-fallback call for a full SHA.
     expect(gitCalls.some((args) => args.includes("ls-remote"))).toBe(false);
-    // No manual git init/remote add plumbing.
-    expect(gitCalls.some((args) => args[0] === "init")).toBe(false);
-    expect(gitCalls.some((args) => args[0] === "remote" && args[1] === "add")).toBe(false);
+    // Never gh-clones the default branch just to fetch a single SHA.
+    expect(gitCalls.some((args) => isGhClone(args))).toBe(false);
 
     await reader.cleanup();
   });
@@ -240,6 +233,8 @@ describe("github reader", () => {
 
     const lsRemoteCall = calls().find((call) => call[1].includes("ls-remote"));
     expect(lsRemoteCall?.[1]).toEqual([
+      "-c",
+      "credential.helper=",
       "-c",
       "credential.helper=!gh auth git-credential",
       "ls-remote",
@@ -344,7 +339,7 @@ describe("github reader", () => {
     await reader.cleanup();
   });
 
-  it("resolves a /commit/<sha> URL via gh clone + git fetch of the exact SHA and returns the root checkout listing", async () => {
+  it("resolves a /commit/<sha> URL via git init + remote add + fetch of the exact SHA and returns the root checkout listing", async () => {
     execFileMock.mockImplementation(
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
         const dir = dirArgOf(args, opts);
@@ -364,17 +359,11 @@ describe("github reader", () => {
     );
 
     const gitCalls = calls().map((call) => call[1]);
-    expect(gitCalls[0]).toEqual([
-      "repo",
-      "clone",
-      "https://github.com/octocat/hello-world.git",
-      expect.any(String),
-      "--",
-      "--depth",
-      "1",
-      "--single-branch",
-    ]);
-    expect(gitCalls[1]).toEqual([
+    expect(gitCalls[0]).toEqual(["init", "--quiet", expect.any(String)]);
+    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "https://github.com/octocat/hello-world.git"]);
+    expect(gitCalls[2]).toEqual([
+      "-c",
+      "credential.helper=",
       "-c",
       "credential.helper=!gh auth git-credential",
       "fetch",
@@ -383,10 +372,9 @@ describe("github reader", () => {
       "origin",
       sha,
     ]);
-    expect(gitCalls[2]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
+    expect(gitCalls[3]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
     expect(gitCalls.some((args) => args.includes("ls-remote"))).toBe(false);
-    expect(gitCalls.some((args) => args[0] === "init")).toBe(false);
-    expect(gitCalls.some((args) => args[0] === "remote" && args[1] === "add")).toBe(false);
+    expect(gitCalls.some((args) => isGhClone(args))).toBe(false);
     expect(result?.title).toBe(`octocat/hello-world@${sha}`);
     expect(result?.text).toContain("README.md");
 

@@ -158,12 +158,14 @@ function remoteUrl(owner: string, repo: string): string {
 }
 
 /**
- * Per-command (never global) git argument that routes credential lookups
+ * Per-command (never global) git arguments that route credential lookups
  * for the given invocation through `gh auth git-credential`, so ls-remote
  * and fetch reuse `gh`'s stored HTTPS credentials without writing to any
- * global git config.
+ * global git config. The leading `credential.helper=` resets any
+ * already-configured helper chain (e.g. the user's global credential
+ * helper) so it cannot supply or override credentials ahead of `gh`.
  */
-const CREDENTIAL_HELPER_ARGS = ["-c", "credential.helper=!gh auth git-credential"];
+const CREDENTIAL_HELPER_ARGS = ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"];
 
 function execGit(args: string[], options: { cwd?: string; signal?: AbortSignal }): Promise<{ stdout: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -336,12 +338,16 @@ async function readTreeListing(cloneDir: string, realRoot: string, dirPath: stri
 }
 
 /**
- * Creates a GitHub reader backend that clones repository content over
- * HTTPS via the `gh` CLI (`gh repo clone https://github.com/OWNER/REPO.git`)
- * into a private per-parent cache directory, never sending repository URLs
- * to Exa. The explicit HTTPS remote overrides `gh`'s configured
- * `git_protocol`, so only `gh auth login` (not an SSH agent/key) is
- * required; `gh` delegates the actual clone to git. Reuses successful
+ * Creates a GitHub reader backend that fetches repository content over
+ * HTTPS into a private per-parent cache directory, never sending
+ * repository URLs to Exa. Default-branch and named-ref requests clone via
+ * the `gh` CLI (`gh repo clone https://github.com/OWNER/REPO.git`), whose
+ * explicit HTTPS remote overrides `gh`'s configured `git_protocol` so only
+ * `gh auth login` (not an SSH agent/key) is required; `gh` delegates the
+ * actual clone to git. Full-SHA requests instead `git init` an empty
+ * directory, add the HTTPS remote, and `git fetch --depth 1 origin <sha>`
+ * authenticated via `gh auth git-credential`, so only the single requested
+ * commit (not the default branch) is ever transferred. Reuses successful
  * clones for the same repository/ref within this reader instance, and
  * removes only the local clone directories it created on cleanup().
  */
@@ -436,8 +442,12 @@ export function createGitHubReader(): GitHubReader {
         const dir = await mkdtemp(join(parent, CLONE_DIR_PREFIX));
         try {
           if (refKind === "sha" && ref) {
-            await execGh(["repo", "clone", remote, dir, "--", "--depth", "1", "--single-branch"], { signal });
-            await execGit([...CREDENTIAL_HELPER_ARGS, "fetch", "--depth", "1", "origin", ref], { cwd: dir, signal });
+            await execGit(["init", "--quiet", dir], { signal });
+            await execGit(["remote", "add", "origin", remote], { cwd: dir, signal });
+            await execGit([...CREDENTIAL_HELPER_ARGS, "fetch", "--depth", "1", "origin", ref], {
+              cwd: dir,
+              signal,
+            });
             await execGit(["checkout", "--detach", "FETCH_HEAD"], { cwd: dir, signal });
           } else if (refKind === "ref" && ref) {
             await execGh(["repo", "clone", remote, dir, "--", "--depth", "1", "--single-branch", "--branch", ref], {

@@ -965,7 +965,7 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("export {};");
   });
 
-  it("routes a /commit/<sha> URL via mocked gh HTTPS clone + git fetch, returning a local path and never calling Exa", async () => {
+  it("routes a /commit/<sha> URL via mocked git fetch --depth 1 of the exact SHA, returning a local path and never calling Exa", async () => {
     mockGitSuccess();
     const sha = "a".repeat(40);
     const tool = getRegisteredTool("web_read");

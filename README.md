@@ -66,19 +66,25 @@ source and extracted text; the title is included only when available.
   SSH agent or key, since the clone always uses an explicit HTTPS remote URL
   (which overrides `gh`'s configured `git_protocol`). `gh` itself delegates
   the clone to `git`, and does not install or configure any global git
-  credential helper as a side effect — `web_read` passes a per-invocation
-  `-c credential.helper=!gh auth git-credential` argument to the `git`
-  commands it runs directly (`ls-remote`, and the exact-SHA `fetch`), so
-  those reuse `gh`'s stored credentials without touching global git config.
-  Clones are shallow and cached per-repository/ref for the lifetime of the
-  process, under a stable `/tmp/pi-scryer` root with a unique per-clone child
-  directory; only the child directories created by this process are removed
-  on graceful shutdown, and the stable root itself is left in place. A
-  `/commit/<sha>` URL reuses this reader's cached clone if that exact SHA was
-  already fetched; a different commit SHA (or repository) triggers a fresh
-  shallow `gh` clone of the default branch followed by a `git fetch` of that
-  exact SHA and a detached checkout. Blob content is capped at 100,000 bytes
-  before `offset` chunking; use the returned local path to read larger files.
+  credential helper as a side effect — `web_read` passes per-invocation
+  `-c credential.helper=` (resetting any already-configured helper chain, so
+  the user's global credential helper cannot supply or override credentials)
+  followed by `-c credential.helper=!gh auth git-credential` arguments to the
+  `git` commands it runs directly (`ls-remote`, and the exact-SHA `fetch`),
+  so those reuse `gh`'s stored credentials without touching global git
+  config. Clones are shallow and cached per-repository/ref for the lifetime
+  of the process, under a stable `/tmp/pi-scryer` root with a unique
+  per-clone child directory; only the child directories created by this
+  process are removed on graceful shutdown, and the stable root itself is
+  left in place. A `/commit/<sha>` URL reuses this reader's cached clone if
+  that exact SHA was already fetched; a different commit SHA (or repository)
+  triggers a fresh `git init` of an empty directory, `git remote add origin
+  https://github.com/owner/repo.git`, and a `git fetch --depth 1 origin
+  <sha>` (authenticated via `gh auth git-credential`) followed by a detached
+  checkout of `FETCH_HEAD` — only the single requested commit is ever
+  transferred, never the default branch. Blob content is capped at 100,000
+  bytes before `offset` chunking; use the returned local path to read larger
+  files.
   If cloning, authentication, or the git fetch fails for a recognized GitHub
   code URL, `web_read` throws — it never falls back to Exa
   for these URLs. Every other GitHub-owned URL is rejected outright instead of
