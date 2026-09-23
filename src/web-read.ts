@@ -53,13 +53,9 @@ function takeUtf8BytePrefix(text: string, maxBytes: number): string {
 
 /**
  * Creates the web_read tool definition, bound to the given continuation
- * cache instance and GitHub reader. GitHub code URLs (repo root, tree,
- * blob, commit) are served by cloning over SSH via `githubReader`, never
- * touching Exa; GitHub issue/pull request URLs are served by an
- * authenticated `gh issue view`/`gh pr view` call instead, also never
- * touching Exa. A recognized-but-failing GitHub URL throws instead of
- * falling back to Exa. All other URLs (including unsupported GitHub pages)
- * fall through to Exa as before.
+ * cache instance and GitHub reader. GitHub code and raw-file URLs use
+ * authenticated local clones; issue and pull request URLs use `gh view`.
+ * Unsupported GitHub URLs fail closed. Only unrelated sites use Exa.
  */
 export function createWebReadTool(cache: ContinuationCache, githubReader: GitHubReader) {
   return defineTool({
