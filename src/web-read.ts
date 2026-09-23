@@ -3,6 +3,7 @@ import { Text, TruncatedText, truncateToWidth, visibleWidth } from "@earendil-wo
 import { Type } from "typebox";
 import type { ContinuationCache } from "./continuation-cache";
 import { type ExaContentResult, fetchExaContent, isHttpUrl, isNonEmptyString, truncateForDisplay } from "./exa";
+import type { GitHubReader } from "./github";
 
 const CALL_PREVIEW_MAX_CHARS = 80;
 const DISPLAY_LINE_MAX_CHARS = 80;
@@ -52,9 +53,13 @@ function takeUtf8BytePrefix(text: string, maxBytes: number): string {
 
 /**
  * Creates the web_read tool definition, bound to the given continuation
- * cache instance.
+ * cache instance and GitHub reader. GitHub code URLs (repo root, tree,
+ * blob, commit) are served by cloning over SSH via `githubReader`, never
+ * touching Exa; a recognized-but-failing GitHub code URL throws instead of
+ * falling back to Exa. All other URLs (including non-code GitHub pages)
+ * fall through to Exa as before.
  */
-export function createWebReadTool(cache: ContinuationCache) {
+export function createWebReadTool(cache: ContinuationCache, githubReader: GitHubReader) {
   return defineTool({
     name: "web_read",
     label: "Read Web Page",
@@ -154,10 +159,12 @@ export function createWebReadTool(cache: ContinuationCache) {
           result = cached;
           servedFromCache = true;
         } else {
-          result = await fetchExaContent(normalizedUrl, signal);
+          const fromReader = await githubReader.read(normalizedUrl, signal);
+          result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
         }
       } else {
-        result = await fetchExaContent(normalizedUrl, signal);
+        const fromReader = await githubReader.read(normalizedUrl, signal);
+        result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
       }
 
       if (offset >= result.text.length) {

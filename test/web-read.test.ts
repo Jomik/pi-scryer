@@ -1,3 +1,5 @@
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -797,5 +799,227 @@ describe("web_read rendering", () => {
       { isError: false },
     );
     expect(renderText(component as RenderedText)).toContain("offsets 12345-12348 of 12349");
+  });
+});
+
+type GitExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+type GitExecFileCall = [string, string[], Record<string, unknown>, GitExecFileCallback];
+
+function gitCalls(): GitExecFileCall[] {
+  return execFileMock.mock.calls as unknown as GitExecFileCall[];
+}
+
+function dirArgOf(args: string[], options: Record<string, unknown>): string {
+  return (options.cwd as string | undefined) ?? args[args.length - 1];
+}
+
+const createdGitDirs = new Set<string>();
+
+/** Mocks every git invocation to succeed, writing a `README.md` fixture
+ * into the freshly created clone/checkout directory so the reader has real
+ * content to read. Used to verify web_read routes recognized GitHub code
+ * URLs through the GitHub reader instead of Exa. */
+function mockGitSuccess(): void {
+  execFileMock.mockImplementation(
+    async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+      const dir = dirArgOf(args, opts);
+      createdGitDirs.add(dir);
+      if (args[0] === "clone" || args[0] === "checkout") {
+        await writeFile(join(dir, "README.md"), "hello");
+      }
+      callback(null, "", "");
+    },
+  );
+}
+
+function mockGitFailure(): void {
+  execFileMock.mockImplementation(
+    (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+      const dir = dirArgOf(args, opts);
+      createdGitDirs.add(dir);
+      callback(new Error("git clone failed"), "", "");
+    },
+  );
+}
+
+describe("web_read GitHub routing", () => {
+  beforeEach(() => {
+    process.env.EXA_API_KEY = SECRET_KEY;
+  });
+
+  afterEach(async () => {
+    if (ORIGINAL_ENV === undefined) {
+      delete process.env.EXA_API_KEY;
+    } else {
+      process.env.EXA_API_KEY = ORIGINAL_ENV;
+    }
+    vi.unstubAllGlobals();
+    for (const dir of createdGitDirs) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+    createdGitDirs.clear();
+  });
+
+  it("routes a repo root URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+    mockGitSuccess();
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/hello-world" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).toContain("README.md");
+  });
+
+  it("routes a /tree/<ref> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdGitDirs.add(dir);
+        if (args[0] === "ls-remote") {
+          callback(null, "abc123\trefs/heads/main", "");
+          return;
+        }
+        if (args[0] === "clone") {
+          await writeFile(join(dir, "README.md"), "hello");
+        }
+        callback(null, "", "");
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/hello-world/tree/main" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+  });
+
+  it("routes a /blob/<ref>/<path> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdGitDirs.add(dir);
+        if (args[0] === "ls-remote") {
+          callback(null, "abc123\trefs/heads/main", "");
+          return;
+        }
+        if (args[0] === "clone") {
+          await mkdir(join(dir, "src"));
+          await writeFile(join(dir, "src", "index.ts"), "export {};");
+        }
+        callback(null, "", "");
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/hello-world/blob/main/src/index.ts" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).toContain("export {};");
+  });
+
+  it("routes a /commit/<sha> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+    mockGitSuccess();
+    const sha = "a".repeat(40);
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: `https://github.com/octocat/hello-world/commit/${sha}` },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+  });
+
+  it("throws on a git clone/fetch failure for a recognized repo URL, never falling back to Exa", async () => {
+    mockGitFailure();
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute("call-1", { url: "https://github.com/octocat/hello-world" }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still uses Exa for a non-code GitHub URL (issues)", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: "Issue", url: "https://github.com/octocat/hello-world/issues/1", text: "issue body text" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/hello-world/issues/1" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
+      false,
+    );
+    expect(result.content[0].text).toContain("issue body text");
+  });
+
+  it("still uses Exa for a non-GitHub URL", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        results: [{ title: "Example", url: "https://example.com/page", text: "page body text" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
+      false,
+    );
+    expect(result.content[0].text).toContain("page body text");
   });
 });
