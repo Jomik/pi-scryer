@@ -18,28 +18,38 @@ function calls(): ExecFileCall[] {
   return execFileMock.mock.calls as unknown as ExecFileCall[];
 }
 
-/** Directory arg used by our clone/checkout call shapes. */
+/** True for the `gh repo clone ... -- ...` argv shape (dir is args[3];
+ * it is not the last arg because the `--` clone flags follow it). */
+function isGhClone(args: string[]): boolean {
+  return args[0] === "repo" && args[1] === "clone";
+}
+
+/** Directory arg used by our clone/checkout/fetch call shapes. */
 function dirArgOf(args: string[], options: Record<string, unknown>): string {
+  if (isGhClone(args)) {
+    return args[3];
+  }
   return (options.cwd as string | undefined) ?? args[args.length - 1];
 }
 
 const createdDirs = new Set<string>();
 
-/** Standard mock: succeeds for every git invocation. ls-remote returns the
- * given ref names as heads. Clone calls create `fixture` entries under the
- * target directory so the reader has real files/directories to read. */
+/** Standard mock: succeeds for every git/gh invocation. ls-remote returns the
+ * given ref names as heads. `gh repo clone` calls create `fixture` entries
+ * under the target directory so the reader has real files/directories to
+ * read. */
 function mockGitSuccess(options: { refs?: string[]; fixture?: (dir: string) => Promise<void> } = {}) {
   const refs = options.refs ?? [];
   execFileMock.mockImplementation(
     async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
       const dir = dirArgOf(args, opts);
       createdDirs.add(dir);
-      if (args[0] === "ls-remote") {
+      if (args.includes("ls-remote")) {
         const stdout = refs.map((name) => `abc123\trefs/heads/${name}`).join("\n");
         callback(null, stdout, "");
         return;
       }
-      if (args[0] === "clone" && options.fixture) {
+      if (isGhClone(args) && options.fixture) {
         await options.fixture(dir);
       }
       callback(null, "", "");
@@ -124,7 +134,7 @@ describe("github reader", () => {
     await reader.cleanup();
   });
 
-  it("clones the repo root over SSH using git@github.com and returns clone root + listing", async () => {
+  it("clones the repo root via gh over an explicit HTTPS URL and returns clone root + listing", async () => {
     mockGitSuccess({
       fixture: async (dir) => {
         await writeFile(join(dir, "README.md"), "hello");
@@ -140,22 +150,26 @@ describe("github reader", () => {
     expect(result?.text).toContain("README.md");
     expect(result?.text).toContain("src");
 
-    const cloneCall = calls().find((call) => call[1][0] === "clone");
+    const cloneCall = calls().find((call) => isGhClone(call[1]));
     expect(cloneCall).toBeDefined();
     const [, args] = cloneCall as ExecFileCall;
     expect(args).toEqual([
+      "repo",
       "clone",
+      "https://github.com/octocat/hello-world.git",
+      expect.any(String),
+      "--",
       "--depth",
       "1",
       "--single-branch",
-      "git@github.com:octocat/hello-world.git",
-      expect.any(String),
     ]);
+    // Explicit HTTPS remote only; no SSH URL is ever passed.
+    expect(args.some((arg) => arg.includes("git@github.com") || arg.startsWith("ssh://"))).toBe(false);
 
     await reader.cleanup();
   });
 
-  it("resolves a 40-hex SHA via init/remote add/fetch/checkout, never falling back to an API", async () => {
+  it("resolves a 40-hex SHA via gh clone + git fetch/checkout, never using git init/remote add", async () => {
     mockGitSuccess();
     const sha = "a".repeat(40);
     const reader = createGitHubReader();
@@ -163,12 +177,31 @@ describe("github reader", () => {
     await reader.read(`https://github.com/octocat/hello-world/tree/${sha}`, new AbortController().signal);
 
     const gitCalls = calls().map((call) => call[1]);
-    expect(gitCalls[0]).toEqual(["init", expect.any(String)]);
-    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "git@github.com:octocat/hello-world.git"]);
-    expect(gitCalls[2]).toEqual(["fetch", "--depth", "1", "origin", sha]);
-    expect(gitCalls[3]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
+    expect(gitCalls[0]).toEqual([
+      "repo",
+      "clone",
+      "https://github.com/octocat/hello-world.git",
+      expect.any(String),
+      "--",
+      "--depth",
+      "1",
+      "--single-branch",
+    ]);
+    expect(gitCalls[1]).toEqual([
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "fetch",
+      "--depth",
+      "1",
+      "origin",
+      sha,
+    ]);
+    expect(gitCalls[2]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
     // No ls-remote / API-fallback call for a full SHA.
-    expect(gitCalls.some((args) => args[0] === "ls-remote")).toBe(false);
+    expect(gitCalls.some((args) => args.includes("ls-remote"))).toBe(false);
+    // No manual git init/remote add plumbing.
+    expect(gitCalls.some((args) => args[0] === "init")).toBe(false);
+    expect(gitCalls.some((args) => args[0] === "remote" && args[1] === "add")).toBe(false);
 
     await reader.cleanup();
   });
@@ -191,16 +224,28 @@ describe("github reader", () => {
     expect(result?.title).toBe("octocat/hello-world@feature/foo");
     expect(result?.text).toContain("index.ts");
 
-    const cloneCall = calls().find((call) => call[1][0] === "clone");
+    const cloneCall = calls().find((call) => isGhClone(call[1]));
     expect(cloneCall?.[1]).toEqual([
+      "repo",
       "clone",
+      "https://github.com/octocat/hello-world.git",
+      expect.any(String),
+      "--",
       "--depth",
       "1",
       "--single-branch",
       "--branch",
       "feature/foo",
-      "git@github.com:octocat/hello-world.git",
-      expect.any(String),
+    ]);
+
+    const lsRemoteCall = calls().find((call) => call[1].includes("ls-remote"));
+    expect(lsRemoteCall?.[1]).toEqual([
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "ls-remote",
+      "--heads",
+      "--tags",
+      "https://github.com/octocat/hello-world.git",
     ]);
 
     await reader.cleanup();
@@ -231,7 +276,7 @@ describe("github reader", () => {
       (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
         const dir = dirArgOf(args, opts);
         createdDirs.add(dir);
-        if (args[0] === "clone") {
+        if (isGhClone(args)) {
           callback(new Error("git failed"), "", "raw stderr should not leak");
           return;
         }
@@ -246,9 +291,7 @@ describe("github reader", () => {
       throw new Error("expected rejection");
     } catch (err) {
       expect(String(err)).not.toContain("raw stderr should not leak");
-      failedDir = calls()
-        .find((call) => call[1][0] === "clone")?.[1]
-        .slice(-1)[0];
+      failedDir = calls().find((call) => isGhClone(call[1]))?.[1][3];
     }
     expect(failedDir).toBeDefined();
     await expect(stat(failedDir as string)).rejects.toThrow();
@@ -274,9 +317,7 @@ describe("github reader", () => {
 
     const reader = createGitHubReader();
     await reader.read("https://github.com/octocat/hello-world", new AbortController().signal);
-    const cloneDir = calls()
-      .find((call) => call[1][0] === "clone")?.[1]
-      .slice(-1)[0] as string;
+    const cloneDir = calls().find((call) => isGhClone(call[1]))?.[1][3] as string;
     await expect(stat(cloneDir)).resolves.toBeDefined();
 
     await reader.cleanup();
@@ -303,7 +344,7 @@ describe("github reader", () => {
     await reader.cleanup();
   });
 
-  it("resolves a /commit/<sha> URL by shallow-fetching the exact SHA and returning the root checkout listing", async () => {
+  it("resolves a /commit/<sha> URL via gh clone + git fetch of the exact SHA and returns the root checkout listing", async () => {
     execFileMock.mockImplementation(
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
         const dir = dirArgOf(args, opts);
@@ -323,12 +364,29 @@ describe("github reader", () => {
     );
 
     const gitCalls = calls().map((call) => call[1]);
-    expect(gitCalls[0]).toEqual(["init", expect.any(String)]);
-    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "git@github.com:octocat/hello-world.git"]);
-    expect(gitCalls[2]).toEqual(["fetch", "--depth", "1", "origin", sha]);
-    expect(gitCalls[3]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
-    expect(gitCalls.some((args) => args[0] === "ls-remote")).toBe(false);
-    expect(gitCalls.some((args) => args[0] === "clone")).toBe(false);
+    expect(gitCalls[0]).toEqual([
+      "repo",
+      "clone",
+      "https://github.com/octocat/hello-world.git",
+      expect.any(String),
+      "--",
+      "--depth",
+      "1",
+      "--single-branch",
+    ]);
+    expect(gitCalls[1]).toEqual([
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "fetch",
+      "--depth",
+      "1",
+      "origin",
+      sha,
+    ]);
+    expect(gitCalls[2]).toEqual(["checkout", "--detach", "FETCH_HEAD"]);
+    expect(gitCalls.some((args) => args.includes("ls-remote"))).toBe(false);
+    expect(gitCalls.some((args) => args[0] === "init")).toBe(false);
+    expect(gitCalls.some((args) => args[0] === "remote" && args[1] === "add")).toBe(false);
     expect(result?.title).toBe(`octocat/hello-world@${sha}`);
     expect(result?.text).toContain("README.md");
 
@@ -391,7 +449,7 @@ describe("github reader", () => {
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
         const dir = dirArgOf(args, opts);
         createdDirs.add(dir);
-        if (args[0] === "clone") {
+        if (isGhClone(args)) {
           await cloneGate;
           await writeFile(join(dir, "README.md"), "hi");
         }
@@ -411,9 +469,7 @@ describe("github reader", () => {
     const [result] = await Promise.all([readPromise, cleanupPromise]);
     expect(result).toBeDefined();
 
-    const cloneDir = calls()
-      .find((call) => call[1][0] === "clone")?.[1]
-      .slice(-1)[0] as string;
+    const cloneDir = calls().find((call) => isGhClone(call[1]))?.[1][3] as string;
     await expect(stat(cloneDir)).rejects.toThrow();
   });
 
@@ -427,7 +483,7 @@ describe("github reader", () => {
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: ExecFileCallback) => {
         const dir = dirArgOf(args, opts);
         createdDirs.add(dir);
-        if (args[0] === "ls-remote") {
+        if (args.includes("ls-remote")) {
           await lsRemoteGate;
           callback(null, "abc123\trefs/heads/main", "");
           return;
@@ -445,6 +501,6 @@ describe("github reader", () => {
 
     await expect(readPromise).rejects.toThrow("github: reader is closed");
     await cleanupPromise;
-    expect(calls().some((call) => call[1][0] === "clone")).toBe(false);
+    expect(calls().some((call) => isGhClone(call[1]))).toBe(false);
   });
 });

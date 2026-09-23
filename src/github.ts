@@ -154,8 +154,16 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
 }
 
 function remoteUrl(owner: string, repo: string): string {
-  return `git@github.com:${owner}/${repo}.git`;
+  return `https://github.com/${owner}/${repo}.git`;
 }
+
+/**
+ * Per-command (never global) git argument that routes credential lookups
+ * for the given invocation through `gh auth git-credential`, so ls-remote
+ * and fetch reuse `gh`'s stored HTTPS credentials without writing to any
+ * global git config.
+ */
+const CREDENTIAL_HELPER_ARGS = ["-c", "credential.helper=!gh auth git-credential"];
 
 function execGit(args: string[], options: { cwd?: string; signal?: AbortSignal }): Promise<{ stdout: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -172,6 +180,35 @@ function execGit(args: string[], options: { cwd?: string; signal?: AbortSignal }
       (error, stdout) => {
         if (error) {
           reject(new Error("github: git command failed"));
+          return;
+        }
+        resolvePromise({ stdout: typeof stdout === "string" ? stdout : String(stdout ?? "") });
+      },
+    );
+  });
+}
+
+/**
+ * Clones via the `gh` CLI, which delegates the actual clone to git but
+ * authenticates over HTTPS using `gh`'s stored credentials. Since `remote`
+ * is always an explicit `https://github.com/...` URL, `gh`'s configured
+ * `git_protocol` (which may default to `ssh`) is overridden and only `gh
+ * auth login` (no SSH agent/key) is required.
+ */
+function execGh(args: string[], options: { signal?: AbortSignal }): Promise<{ stdout: string }> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      "gh",
+      args,
+      {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: GIT_TIMEOUT_MS,
+        signal: options.signal,
+        maxBuffer: 16 * 1024 * 1024,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error("github: gh command failed"));
           return;
         }
         resolvePromise({ stdout: typeof stdout === "string" ? stdout : String(stdout ?? "") });
@@ -299,11 +336,14 @@ async function readTreeListing(cloneDir: string, realRoot: string, dirPath: stri
 }
 
 /**
- * Creates a GitHub reader backend that clones repository content via SSH
- * (git@github.com) into a private per-parent cache directory, never sending
- * repository URLs to Exa. Reuses successful clones for the same
- * repository/ref within this reader instance, and removes only the local
- * clone directories it created on cleanup().
+ * Creates a GitHub reader backend that clones repository content over
+ * HTTPS via the `gh` CLI (`gh repo clone https://github.com/OWNER/REPO.git`)
+ * into a private per-parent cache directory, never sending repository URLs
+ * to Exa. The explicit HTTPS remote overrides `gh`'s configured
+ * `git_protocol`, so only `gh auth login` (not an SSH agent/key) is
+ * required; `gh` delegates the actual clone to git. Reuses successful
+ * clones for the same repository/ref within this reader instance, and
+ * removes only the local clone directories it created on cleanup().
  */
 export function createGitHubReader(): GitHubReader {
   const cloneDirs = new Map<string, string>();
@@ -335,7 +375,7 @@ export function createGitHubReader(): GitHubReader {
   function listRemoteRefs(remote: string, repoKey: string, signal: AbortSignal | undefined): Promise<string[]> {
     let cached = refsCache.get(repoKey);
     if (!cached) {
-      cached = execGit(["ls-remote", "--heads", "--tags", remote], { signal })
+      cached = execGit([...CREDENTIAL_HELPER_ARGS, "ls-remote", "--heads", "--tags", remote], { signal })
         .then(({ stdout }) => parseRefNames(stdout))
         .catch((err) => {
           refsCache.delete(repoKey);
@@ -396,14 +436,15 @@ export function createGitHubReader(): GitHubReader {
         const dir = await mkdtemp(join(parent, CLONE_DIR_PREFIX));
         try {
           if (refKind === "sha" && ref) {
-            await execGit(["init", dir], { signal });
-            await execGit(["remote", "add", "origin", remote], { cwd: dir, signal });
-            await execGit(["fetch", "--depth", "1", "origin", ref], { cwd: dir, signal });
+            await execGh(["repo", "clone", remote, dir, "--", "--depth", "1", "--single-branch"], { signal });
+            await execGit([...CREDENTIAL_HELPER_ARGS, "fetch", "--depth", "1", "origin", ref], { cwd: dir, signal });
             await execGit(["checkout", "--detach", "FETCH_HEAD"], { cwd: dir, signal });
           } else if (refKind === "ref" && ref) {
-            await execGit(["clone", "--depth", "1", "--single-branch", "--branch", ref, remote, dir], { signal });
+            await execGh(["repo", "clone", remote, dir, "--", "--depth", "1", "--single-branch", "--branch", ref], {
+              signal,
+            });
           } else {
-            await execGit(["clone", "--depth", "1", "--single-branch", remote, dir], { signal });
+            await execGh(["repo", "clone", remote, dir, "--", "--depth", "1", "--single-branch"], { signal });
           }
           cloneDirs.set(cacheKey, dir);
           return dir;

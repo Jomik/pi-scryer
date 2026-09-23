@@ -810,12 +810,20 @@ function gitCalls(): GitExecFileCall[] {
 }
 
 function dirArgOf(args: string[], options: Record<string, unknown>): string {
+  if (isGhClone(args)) {
+    return args[3];
+  }
   return (options.cwd as string | undefined) ?? args[args.length - 1];
+}
+
+/** True for the `gh repo clone ... -- ...` argv shape. */
+function isGhClone(args: string[]): boolean {
+  return args[0] === "repo" && args[1] === "clone";
 }
 
 const createdGitDirs = new Set<string>();
 
-/** Mocks every git invocation to succeed, writing a `README.md` fixture
+/** Mocks every git/gh invocation to succeed, writing a `README.md` fixture
  * into the freshly created clone/checkout directory so the reader has real
  * content to read. Used to verify web_read routes recognized GitHub code
  * URLs through the GitHub reader instead of Exa. */
@@ -824,7 +832,7 @@ function mockGitSuccess(): void {
     async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
       const dir = dirArgOf(args, opts);
       createdGitDirs.add(dir);
-      if (args[0] === "clone" || args[0] === "checkout") {
+      if (isGhClone(args) || args[0] === "checkout") {
         await writeFile(join(dir, "README.md"), "hello");
       }
       callback(null, "", "");
@@ -860,7 +868,7 @@ describe("web_read GitHub routing", () => {
     createdGitDirs.clear();
   });
 
-  it("routes a repo root URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+  it("routes a repo root URL via mocked gh HTTPS clone, returning a local path and never calling Exa", async () => {
     mockGitSuccess();
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
@@ -877,6 +885,7 @@ describe("web_read GitHub routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.content[0].text).toContain("Local path:");
     expect(result.content[0].text).toContain("README.md");
+    expect(gitCalls().some((call) => call[1].join(" ").includes("git@github.com"))).toBe(false);
   });
 
   it("routes a repo root URL with an undefined signal, returning a local path and never calling Exa", async () => {
@@ -892,16 +901,16 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("README.md");
   });
 
-  it("routes a /tree/<ref> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+  it("routes a /tree/<ref> URL via mocked gh HTTPS clone, returning a local path and never calling Exa", async () => {
     execFileMock.mockImplementation(
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
         const dir = dirArgOf(args, opts);
         createdGitDirs.add(dir);
-        if (args[0] === "ls-remote") {
+        if (args.includes("ls-remote")) {
           callback(null, "abc123\trefs/heads/main", "");
           return;
         }
-        if (args[0] === "clone") {
+        if (isGhClone(args)) {
           await writeFile(join(dir, "README.md"), "hello");
         }
         callback(null, "", "");
@@ -923,16 +932,16 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("Local path:");
   });
 
-  it("routes a /blob/<ref>/<path> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+  it("routes a /blob/<ref>/<path> URL via mocked gh HTTPS clone, returning a local path and never calling Exa", async () => {
     execFileMock.mockImplementation(
       async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
         const dir = dirArgOf(args, opts);
         createdGitDirs.add(dir);
-        if (args[0] === "ls-remote") {
+        if (args.includes("ls-remote")) {
           callback(null, "abc123\trefs/heads/main", "");
           return;
         }
-        if (args[0] === "clone") {
+        if (isGhClone(args)) {
           await mkdir(join(dir, "src"));
           await writeFile(join(dir, "src", "index.ts"), "export {};");
         }
@@ -956,7 +965,7 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("export {};");
   });
 
-  it("routes a /commit/<sha> URL over mock Git SSH, returning a local path and never calling Exa", async () => {
+  it("routes a /commit/<sha> URL via mocked gh HTTPS clone + git fetch, returning a local path and never calling Exa", async () => {
     mockGitSuccess();
     const sha = "a".repeat(40);
     const tool = getRegisteredTool("web_read");
@@ -1004,9 +1013,9 @@ describe("web_read GitHub routing", () => {
     ).rejects.toThrow("github: unsupported GitHub URL");
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
-      false,
-    );
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
   });
 
   it("blocks a private pull request URL from ever reaching Exa, failing closed", async () => {
@@ -1025,9 +1034,9 @@ describe("web_read GitHub routing", () => {
     ).rejects.toThrow("github: unsupported GitHub URL");
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
-      false,
-    );
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
   });
 
   it("blocks a raw.githubusercontent.com URL from ever reaching Exa, failing closed", async () => {
@@ -1046,9 +1055,9 @@ describe("web_read GitHub routing", () => {
     ).rejects.toThrow("github: unsupported GitHub URL");
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
-      false,
-    );
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
   });
 
   it("blocks a raw.githubusercontent.com URL from reaching Exa on a fresh offset>0 request (cache miss)", async () => {
@@ -1067,9 +1076,9 @@ describe("web_read GitHub routing", () => {
     ).rejects.toThrow("github: unsupported GitHub URL");
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
-      false,
-    );
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
   });
 
   it("still uses Exa for a non-GitHub URL", async () => {
@@ -1090,9 +1099,9 @@ describe("web_read GitHub routing", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(gitCalls().some((call) => ["clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0]))).toBe(
-      false,
-    );
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
     expect(result.content[0].text).toContain("page body text");
   });
 });
