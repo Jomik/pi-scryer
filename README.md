@@ -51,13 +51,71 @@ stored or cached in any project, session, or cache file.
 
 ### `web_read`
 
-`web_read(url, offset?)` fetches a URL's content using Exa's provider-side
-retrieval and returns the resolved source and extracted text; the title is
-included only when Exa provides one.
+`web_read(url, offset?)` fetches a URL's content and returns the resolved
+source and extracted text; the title is included only when available.
 
 - HTTP(S) URLs only.
 - Fixed 30s timeout.
 - Output limited to 50KB or 2000 lines per call, whichever is hit first.
+- **GitHub code URLs:** repo root, `/tree/<ref>[/path]`, `/blob/<ref>/path`,
+  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com`, plus
+  `raw.githubusercontent.com/OWNER/REPO/<ref>/path`, are read directly by
+  shallow-cloning the repository over HTTPS via the `gh` CLI (`gh repo clone
+  https://github.com/owner/repo.git`) instead of going through Exa — content
+  is never sent to Exa for these URLs. `github.com/OWNER/REPO/raw/<ref>/path`
+  and `raw.githubusercontent.com/OWNER/REPO/<ref>/path` are resolved and read
+  identically to `/blob/<ref>/path` (single-file content, not a directory
+  listing). This requires `gh` to be installed and
+  authenticated (`gh auth login` / `gh auth status`); it does not require an
+  SSH agent or key, since the clone always uses an explicit HTTPS remote URL
+  (which overrides `gh`'s configured `git_protocol`). `gh` itself delegates
+  the clone to `git`, and does not install or configure any global git
+  credential helper as a side effect — `web_read` passes per-invocation
+  `-c credential.helper=` (resetting any already-configured helper chain, so
+  the user's global credential helper cannot supply or override credentials)
+  followed by `-c credential.helper=!gh auth git-credential` arguments to the
+  `git` commands it runs directly (`ls-remote`, and the exact-SHA `fetch`),
+  so those reuse `gh`'s stored credentials without touching global git
+  config. Clones are shallow and cached per-repository/ref for the lifetime
+  of the process, under a stable `/tmp/pi-scryer` root with a unique
+  per-clone child directory; only the child directories created by this
+  process are removed on graceful shutdown, and the stable root itself is
+  left in place. A `/commit/<sha>` URL reuses this reader's cached clone if
+  that exact SHA was already fetched; a different commit SHA (or repository)
+  triggers a fresh `git init` of an empty directory, `git remote add origin
+  https://github.com/owner/repo.git`, and a `git fetch --depth 1 origin
+  <sha>` (authenticated via `gh auth git-credential`) followed by a detached
+  checkout of `FETCH_HEAD` — only the single requested commit is ever
+  transferred, never the default branch. Blob content is capped at 100,000
+  bytes before `offset` chunking; use the returned local path to read larger
+  files.
+  If cloning, authentication, or the git fetch fails for a recognized GitHub
+  code URL, `web_read` throws — it never falls back to Exa
+  for these URLs.
+- **GitHub issue/pull request URLs:** `github.com/OWNER/REPO/issues/<n>` and
+  `github.com/OWNER/REPO/pull/<n>` (also `www.github.com`; exactly these 4
+  path segments, an optional trailing slash or query string is fine, `<n>` a
+  positive decimal integer) are read directly via the authenticated `gh` CLI
+  (`gh issue view`/`gh pr view --repo OWNER/REPO --json
+  title,body,comments,url`) — no clone, no temporary directory, and no Exa
+  call is ever made for these URLs. Only the issue/PR's title, body, and
+  general (top-level) comments are included; inline pull request review
+  comment threads on the diff are not fetched. If `gh` is missing, fails, or
+  returns no content, `web_read` throws — it never falls back to Exa.
+- Every other GitHub-owned URL is rejected outright instead of
+  being sent to Exa: this includes other `github.com` paths such as
+  malformed issue/pull URLs (extra segments, non-numeric or malformed
+  numbers) and profile pages; any `github.com` subdomain (`gist.github.com`,
+  `api.github.com`, etc.); and `githubusercontent.com` / any other
+  `*.githubusercontent.com` subdomain (`raw.githubusercontent.com` is the one
+  supported exception, handled above),
+  since these can serve private repository content that must never be leaked
+  to a third-party content provider. `web_read` throws a clear
+  unsupported-GitHub-URL error for these instead of returning `undefined` and
+  falling through to Exa; this applies to both fresh fetches and offset-based
+  continuation requests that miss the cache. Only URLs on genuinely unrelated
+  sites are fetched via Exa.
+- Non-GitHub URLs are fetched using Exa's provider-side retrieval.
 - **Continuing long pages:** when a page's extracted text does not fit in one
   call, the response ends with a marker stating the current offset, the exact
   next offset, the total text length, and the call to make next, e.g.
@@ -65,21 +123,21 @@ included only when Exa provides one.
   the next chunk — do not compute your own offset. Offsets are exact
   positions into the previously returned page text; copy them verbatim. The
   final chunk has no continuation marker.
-- Omitting `offset` (or passing `0`) always fetches the page fresh from Exa,
-  atomically replacing (or removing, if the fresh page fits in one call) that
-  URL's cache entry.
+- Omitting `offset` (or passing `0`) always fetches the page fresh (via the
+  GitHub reader or Exa, per the routing above), atomically replacing (or
+  removing, if the fresh page fits in one call) that URL's cache entry.
 - The extension caches up to 5 pages' continuation state in a private,
   per-process temp directory (not shared between agents or processes). A
   continuation call (`offset > 0`) reuses a cached entry only when it targets
   the same URL as a cached fetch; otherwise (a different URL, a corrupted or
-  missing cache file, an evicted entry, or a fresh process) it re-fetches via
-  Exa before applying the offset. The 6th distinct page evicts the
+  missing cache file, an evicted entry, or a fresh process) it re-fetches
+  before applying the offset. The 6th distinct page evicts the
   least-recently-used cached entry; reading a cached entry refreshes it.
   Finishing a page (reaching its last chunk) removes its cache entry. The
   cache directory is cleaned up on graceful shutdown and is otherwise
   abandoned to OS temp-directory cleanup if the process crashes.
-- No retry, no fallback, and no direct local page fetch — retrieval is always
-  performed via the Exa API.
+- No retry, and no direct local page fetch for non-GitHub-code URLs —
+  retrieval for those is always performed via the Exa API.
 
 ### `web_search`
 

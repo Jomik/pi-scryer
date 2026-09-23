@@ -103,7 +103,7 @@ export interface RegisteredTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
-    signal: AbortSignal,
+    signal: AbortSignal | undefined,
     onUpdate: (...args: unknown[]) => void,
     ctx: unknown,
   ) => Promise<ToolResult>;

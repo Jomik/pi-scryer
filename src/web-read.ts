@@ -3,6 +3,7 @@ import { Text, TruncatedText, truncateToWidth, visibleWidth } from "@earendil-wo
 import { Type } from "typebox";
 import type { ContinuationCache } from "./continuation-cache";
 import { type ExaContentResult, fetchExaContent, isHttpUrl, isNonEmptyString, truncateForDisplay } from "./exa";
+import type { GitHubReader } from "./github";
 
 const CALL_PREVIEW_MAX_CHARS = 80;
 const DISPLAY_LINE_MAX_CHARS = 80;
@@ -52,14 +53,16 @@ function takeUtf8BytePrefix(text: string, maxBytes: number): string {
 
 /**
  * Creates the web_read tool definition, bound to the given continuation
- * cache instance.
+ * cache instance and GitHub reader. GitHub code and raw-file URLs use
+ * authenticated local clones; issue and pull request URLs use `gh view`.
+ * Unsupported GitHub URLs fail closed. Only unrelated sites use Exa.
  */
-export function createWebReadTool(cache: ContinuationCache) {
+export function createWebReadTool(cache: ContinuationCache, githubReader: GitHubReader) {
   return defineTool({
     name: "web_read",
     label: "Read Web Page",
     description:
-      "Fetch and read the content of a web page as Markdown. Output is truncated to 2000 lines or 50KB (whichever is hit first), keeping the beginning of the content. Pass the offset value returned by a previous call to continue reading a long page; omit or use 0 to fetch fresh content from the start.",
+      "Fetch and read the content of a web page as Markdown. Output is truncated to 2000 lines or 50KB (whichever is hit first), keeping the beginning of the content. GitHub code, issue, and pull request URLs are read directly via the authenticated `gh` CLI instead of a third-party provider; other GitHub URLs (e.g. profile pages) are rejected instead of being sent to that provider. Pass the offset value returned by a previous call to continue reading a long page; omit or use 0 to fetch fresh content from the start.",
     parameters: Type.Object(
       {
         url: Type.String({ description: "Absolute http(s) URL to read.", minLength: 1 }),
@@ -154,10 +157,12 @@ export function createWebReadTool(cache: ContinuationCache) {
           result = cached;
           servedFromCache = true;
         } else {
-          result = await fetchExaContent(normalizedUrl, signal);
+          const fromReader = await githubReader.read(normalizedUrl, signal);
+          result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
         }
       } else {
-        result = await fetchExaContent(normalizedUrl, signal);
+        const fromReader = await githubReader.read(normalizedUrl, signal);
+        result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
       }
 
       if (offset >= result.text.length) {
