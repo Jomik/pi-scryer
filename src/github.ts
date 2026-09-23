@@ -356,7 +356,7 @@ async function readBlobText(cloneDir: string, realRoot: string, filePath: string
   const truncated = info.size > MAX_BLOB_BYTES;
   const content = buffer.subarray(0, bytesRead).toString("utf-8");
   const relPath = relative(realRoot, filePath);
-  const header = `Repository clone root: ${cloneDir}\nFile: ${relPath}\nLocal path: ${filePath}\n\n`;
+  const header = `Repository clone root: ${cloneDir}\nFile: ${relPath}\nLocal path: ${filePath}\nExplore other files with filesystem tools under the clone root.\n\n`;
   return truncated
     ? `${header}${content}\n\n[truncated at ${MAX_BLOB_BYTES} bytes of ${info.size}]`
     : `${header}${content}`;
@@ -379,7 +379,7 @@ async function readTreeListing(cloneDir: string, realRoot: string, dirPath: stri
       return `${type}  ${entry.name}`;
     });
   const relPath = relative(realRoot, dirPath) || ".";
-  const header = `Repository clone root: ${cloneDir}\nPath: ${relPath}\nLocal path: ${dirPath}\n\n`;
+  const header = `Repository clone root: ${cloneDir}\nPath: ${relPath}\nLocal path: ${dirPath}\nExplore other files with filesystem tools under the clone root.\n\n`;
   return `${header}${lines.length > 0 ? lines.join("\n") : "(empty directory)"}`;
 }
 
