@@ -47,7 +47,7 @@ function assertSafeSegment(segment: string): void {
 }
 
 const UNSUPPORTED_GITHUB_URL_MESSAGE =
-  "github: unsupported GitHub URL — rejected to protect private data. Only repo root, /tree/<ref>[/path], /blob/<ref>/path, and /commit/<sha> URLs on github.com can be read; this includes github.com subdomains (gist, api, ...) and githubusercontent.com.";
+  "github: unsupported GitHub URL — rejected to protect private data. Only repo root, /tree/<ref>[/path], /blob/<ref>/path, /commit/<sha>, and /raw/<ref>/path URLs on github.com, plus raw.githubusercontent.com/OWNER/REPO/<ref>/path, can be read; this includes github.com subdomains (gist, api, ...) and other githubusercontent.com hosts.";
 
 /**
  * True for github.com, any *.github.com subdomain, githubusercontent.com,
@@ -69,12 +69,17 @@ function isGitHubOwnedHost(host: string): boolean {
  * that are not GitHub-owned at all. For any GitHub-owned host (github.com,
  * any *.github.com subdomain, githubusercontent.com, any
  * *.githubusercontent.com subdomain) that does not address a supported
- * repository code reference (profile pages, issues, pulls, raw content,
- * gist/api subdomains, etc.), this throws instead of returning undefined so
- * callers fail closed rather than fall back to a remote content provider.
- * Also throws for github.com repo-code-shaped URLs that are otherwise
- * malformed (credentials, custom port, invalid owner/repo, traversal,
- * missing ref).
+ * repository code reference (profile pages, issues, pulls, gist/api
+ * subdomains, non-raw githubusercontent.com hosts, etc.), this throws
+ * instead of returning undefined so callers fail closed rather than fall
+ * back to a remote content provider. Also throws for github.com
+ * repo-code-shaped URLs that are otherwise malformed (credentials, custom
+ * port, invalid owner/repo, traversal, missing ref).
+ *
+ * Two raw-content routes are recognized and parsed as a blob target
+ * (identical ref/path resolution and reading as /blob/<ref>/path):
+ * raw.githubusercontent.com/OWNER/REPO/<ref>/<path> and
+ * github.com/OWNER/REPO/raw/<ref>/<path> (also www.github.com).
  */
 export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   let parsed: URL;
@@ -97,10 +102,11 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
   if (parsed.port.length > 0) {
     throw new Error("github: URL must not specify a custom port");
   }
-  if (host !== "github.com" && host !== "www.github.com") {
+  const isRawContentHost = host === "raw.githubusercontent.com";
+  if (host !== "github.com" && host !== "www.github.com" && !isRawContentHost) {
     // Other GitHub-owned hosts (gist.github.com, api.github.com,
-    // raw.githubusercontent.com, githubusercontent.com, ...) never address a
-    // clonable repository code reference.
+    // githubusercontent.com, other githubusercontent.com subdomains, ...)
+    // never address a clonable repository code reference.
     throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
 
@@ -128,12 +134,23 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
     throw new Error("github: malformed owner or repository name");
   }
 
+  if (isRawContentHost) {
+    // raw.githubusercontent.com/OWNER/REPO/<ref>/<path>: no "blob"/"tree"
+    // keyword segment; the remainder is the same ref-then-path shape as a
+    // /blob/<ref>/path URL, resolved and read identically.
+    const refAndPath = segments.slice(2);
+    if (refAndPath.length === 0) {
+      throw new Error("github: raw URL is missing a ref");
+    }
+    return { owner, repo, target: { kind: "blob", refAndPath } };
+  }
+
   if (segments.length === 2) {
     return { owner, repo, target: { kind: "root" } };
   }
 
   const kind = segments[2];
-  if (kind !== "tree" && kind !== "blob" && kind !== "commit") {
+  if (kind !== "tree" && kind !== "blob" && kind !== "commit" && kind !== "raw") {
     throw new Error(UNSUPPORTED_GITHUB_URL_MESSAGE);
   }
 
@@ -150,7 +167,9 @@ export function parseGitHubUrl(rawUrl: string): ParsedGitHubUrl | undefined {
     throw new Error(`github: ${kind} URL is missing a ref`);
   }
 
-  return { owner, repo, target: { kind, refAndPath } };
+  // github.com/OWNER/REPO/raw/<ref>/<path> reads identically to
+  // /blob/<ref>/path (single-file content, not a directory listing).
+  return { owner, repo, target: { kind: kind === "raw" ? "blob" : kind, refAndPath } };
 }
 
 function remoteUrl(owner: string, repo: string): string {

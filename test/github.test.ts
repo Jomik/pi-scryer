@@ -79,18 +79,80 @@ describe("github reader", () => {
     await reader.cleanup();
   });
 
-  it("throws for github.com subdomains and githubusercontent.com hosts without invoking git", async () => {
+  it("throws for github.com subdomains and non-raw githubusercontent.com hosts without invoking git", async () => {
     const reader = createGitHubReader();
     await expect(reader.read("https://gist.github.com/octocat/abc123", new AbortController().signal)).rejects.toThrow(
       "github: unsupported GitHub URL",
     );
     await expect(
-      reader.read("https://raw.githubusercontent.com/octocat/hello-world/main/README.md", new AbortController().signal),
-    ).rejects.toThrow("github: unsupported GitHub URL");
-    await expect(
       reader.read("https://githubusercontent.com/octocat/hello-world", new AbortController().signal),
     ).rejects.toThrow("github: unsupported GitHub URL");
+    await expect(
+      reader.read(
+        "https://codeload.githubusercontent.com/octocat/hello-world/tar.gz/main",
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("github: unsupported GitHub URL");
     expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("throws for a malformed raw.githubusercontent.com URL (missing ref/path) without invoking git", async () => {
+    const reader = createGitHubReader();
+    await expect(
+      reader.read("https://raw.githubusercontent.com/octocat/hello-world", new AbortController().signal),
+    ).rejects.toThrow("raw URL is missing a ref");
+    expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("throws for a malformed github.com/.../raw URL (missing ref/path) without invoking git", async () => {
+    const reader = createGitHubReader();
+    await expect(
+      reader.read("https://github.com/octocat/hello-world/raw", new AbortController().signal),
+    ).rejects.toThrow("raw URL is missing a ref");
+    expect(execFileMock).not.toHaveBeenCalled();
+    await reader.cleanup();
+  });
+
+  it("reads content for a raw.githubusercontent.com URL, resolving the ref and returning the local file path", async () => {
+    mockGitSuccess({
+      refs: ["main"],
+      fixture: async (dir) => {
+        await writeFile(join(dir, "package.json"), '{"name":"hello-world"}');
+      },
+    });
+
+    const reader = createGitHubReader();
+    const result = await reader.read(
+      "https://raw.githubusercontent.com/octocat/hello-world/main/package.json",
+      new AbortController().signal,
+    );
+
+    expect(result?.text).toContain("File: package.json");
+    expect(result?.text).toContain('{"name":"hello-world"}');
+    expect(result?.text).toMatch(/Local path: .*\/package\.json\b/);
+
+    await reader.cleanup();
+  });
+
+  it("reads content for a github.com/OWNER/REPO/raw/<ref>/<path> URL identically to a blob URL", async () => {
+    mockGitSuccess({
+      refs: ["main"],
+      fixture: async (dir) => {
+        await writeFile(join(dir, "package.json"), '{"name":"hello-world"}');
+      },
+    });
+
+    const reader = createGitHubReader();
+    const result = await reader.read(
+      "https://github.com/octocat/hello-world/raw/main/package.json",
+      new AbortController().signal,
+    );
+
+    expect(result?.text).toContain("File: package.json");
+    expect(result?.text).toContain('{"name":"hello-world"}');
+
     await reader.cleanup();
   });
 

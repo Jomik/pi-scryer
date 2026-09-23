@@ -58,10 +58,14 @@ source and extracted text; the title is included only when available.
 - Fixed 30s timeout.
 - Output limited to 50KB or 2000 lines per call, whichever is hit first.
 - **GitHub code URLs:** repo root, `/tree/<ref>[/path]`, `/blob/<ref>/path`,
-  and `/commit/<sha>` URLs on `github.com` are read directly by shallow-cloning
-  the repository over HTTPS via the `gh` CLI (`gh repo clone
+  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com`, plus
+  `raw.githubusercontent.com/OWNER/REPO/<ref>/path`, are read directly by
+  shallow-cloning the repository over HTTPS via the `gh` CLI (`gh repo clone
   https://github.com/owner/repo.git`) instead of going through Exa — content
-  is never sent to Exa for these URLs. This requires `gh` to be installed and
+  is never sent to Exa for these URLs. `github.com/OWNER/REPO/raw/<ref>/path`
+  and `raw.githubusercontent.com/OWNER/REPO/<ref>/path` are resolved and read
+  identically to `/blob/<ref>/path` (single-file content, not a directory
+  listing). This requires `gh` to be installed and
   authenticated (`gh auth login` / `gh auth status`); it does not require an
   SSH agent or key, since the clone always uses an explicit HTTPS remote URL
   (which overrides `gh`'s configured `git_protocol`). `gh` itself delegates
@@ -90,8 +94,9 @@ source and extracted text; the title is included only when available.
   for these URLs. Every other GitHub-owned URL is rejected outright instead of
   being sent to Exa: this includes `github.com` issues, pull requests, and
   profile pages; any `github.com` subdomain (`gist.github.com`,
-  `api.github.com`, etc.); and `githubusercontent.com` / any
-  `*.githubusercontent.com` subdomain (including `raw.githubusercontent.com`),
+  `api.github.com`, etc.); and `githubusercontent.com` / any other
+  `*.githubusercontent.com` subdomain (`raw.githubusercontent.com` is the one
+  supported exception, handled above),
   since these can serve private repository content that must never be leaked
   to a third-party content provider. `web_read` throws a clear
   unsupported-GitHub-URL error for these instead of returning `undefined` and

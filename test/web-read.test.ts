@@ -1039,7 +1039,71 @@ describe("web_read GitHub routing", () => {
     ).toBe(false);
   });
 
-  it("blocks a raw.githubusercontent.com URL from ever reaching Exa, failing closed", async () => {
+  it("routes a raw.githubusercontent.com URL via mocked gh HTTPS clone, returning a local path and never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdGitDirs.add(dir);
+        if (args.includes("ls-remote")) {
+          callback(null, "abc123\trefs/heads/main", "");
+          return;
+        }
+        if (isGhClone(args)) {
+          await writeFile(join(dir, "secrets.txt"), "local content");
+        }
+        callback(null, "", "");
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://raw.githubusercontent.com/octocat/private-repo/main/secrets.txt" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).toContain("local content");
+  });
+
+  it("routes a github.com/OWNER/REPO/raw/<ref>/<path> URL identically to a blob URL, never calling Exa", async () => {
+    execFileMock.mockImplementation(
+      async (_file: string, args: string[], opts: Record<string, unknown>, callback: GitExecFileCallback) => {
+        const dir = dirArgOf(args, opts);
+        createdGitDirs.add(dir);
+        if (args.includes("ls-remote")) {
+          callback(null, "abc123\trefs/heads/main", "");
+          return;
+        }
+        if (isGhClone(args)) {
+          await writeFile(join(dir, "secrets.txt"), "local content");
+        }
+        callback(null, "", "");
+      },
+    );
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await tool.execute(
+      "call-1",
+      { url: "https://github.com/octocat/private-repo/raw/main/secrets.txt" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).toContain("local content");
+  });
+
+  it("blocks a malformed raw.githubusercontent.com URL (missing ref/path) from ever reaching Exa, failing closed", async () => {
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
@@ -1047,12 +1111,12 @@ describe("web_read GitHub routing", () => {
     await expect(
       tool.execute(
         "call-1",
-        { url: "https://raw.githubusercontent.com/octocat/private-repo/main/secrets.txt" },
+        { url: "https://raw.githubusercontent.com/octocat/private-repo" },
         new AbortController().signal,
         noop,
         {},
       ),
-    ).rejects.toThrow("github: unsupported GitHub URL");
+    ).rejects.toThrow("raw URL is missing a ref");
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(
@@ -1060,7 +1124,7 @@ describe("web_read GitHub routing", () => {
     ).toBe(false);
   });
 
-  it("blocks a raw.githubusercontent.com URL from reaching Exa on a fresh offset>0 request (cache miss)", async () => {
+  it("blocks a malformed raw.githubusercontent.com URL from reaching Exa on a fresh offset>0 request (cache miss)", async () => {
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
@@ -1068,7 +1132,28 @@ describe("web_read GitHub routing", () => {
     await expect(
       tool.execute(
         "call-1",
-        { url: "https://raw.githubusercontent.com/octocat/private-repo/main/secrets.txt", offset: 10 },
+        { url: "https://raw.githubusercontent.com/octocat/private-repo", offset: 10 },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("raw URL is missing a ref");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
+    ).toBe(false);
+  });
+
+  it("blocks a non-raw githubusercontent.com host from ever reaching Exa, failing closed", async () => {
+    const tool = getRegisteredTool("web_read");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://githubusercontent.com/octocat/private-repo" },
         new AbortController().signal,
         noop,
         {},
