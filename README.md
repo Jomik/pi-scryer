@@ -58,24 +58,32 @@ also resets route availability.
 
 ## Provider routing
 
-Each fresh `web_search` or non-GitHub `web_read` randomly starts with a provider
-that has an available route (Exa or Tavily). Within that provider it tries the
-keyed route if configured, then its anonymous route; only then does it try the
-other provider, also keyed before anonymous. Attempts are sequential, not
-parallel queries. Successful output identifies the provider and access mode;
-`web_read` continuation chunks retain the original provider and mode. Empty
-search results may prompt another route; if all routes return no matches, the
-result is "No search results found."
+Four routes are tracked independently: Exa keyed REST, Exa anonymous MCP,
+Tavily keyed REST, and Tavily keyless REST (anonymous). Each fresh `web_search`
+or non-GitHub `web_read` randomly starts with one eligible anonymous route,
+then tries the other eligible anonymous route if needed. Only if neither
+returns a usable result does it randomly start with an eligible configured
+keyed route, then try the other eligible keyed route if needed. Routes without
+a configured key, disabled routes, and rate-limited routes still waiting for
+their retry time are omitted. Attempts are sequential, not parallel queries.
+Successful output identifies the provider and access mode; `web_read`
+continuation chunks retain the original provider and mode. Empty search
+results may prompt another route; if all routes return no matches, the result
+is "No search results found."
 
 Quota exhaustion or invalid credentials disable only the affected route until
-process restart. Rate limits skip a route until its retry time, or for 30
-seconds when none is supplied. Other transient failures fall through to the
-next route for that request and can be retried on a later request; a failed
-route is not retried within the same request. If no route succeeds, the tool
-reports a sanitized failure instead of returning partial content. Neither
-`/scryer status` nor a successful request reveals remaining free-tier balance:
-this extension cannot guarantee free-tier-only billing. Set provider-side
-spending caps or disable overages if a hard spending limit is required.
+process restart. Rate limits skip a route until its next eligible time, using
+a valid positive HTTP `Retry-After` delay when present; for Tavily keyless
+responses, `retry_after_seconds` in the error body is used if the header is
+absent or invalid. Otherwise the cooldown is 30 seconds. Each route's next
+eligible time is held in process memory; there is no balance API check or
+persistent quota tracking. Other transient failures fall through to the next route for
+that request and can be retried on a later request; a failed route is not
+retried within the same request. If no route succeeds, the tool reports a
+sanitized failure instead of returning partial content. Neither `/scryer status`
+nor a successful request reveals remaining free-tier balance: this extension
+cannot guarantee free-tier-only billing. Set provider-side spending caps or
+disable overages if a hard spending limit is required.
 
 ## Tools
 
