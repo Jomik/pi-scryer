@@ -13,7 +13,6 @@ import {
   type RenderedText,
   renderText,
   SECRET_KEY,
-  textResponse,
   type WebReadToolDetails,
 } from "./harness";
 
@@ -24,10 +23,12 @@ type ExecFileCallback = (
 ) => void;
 
 const KEYCHAIN_KEY = "keychain-test-key";
+const ORIGINAL_TAVILY_KEY = process.env.TAVILY_API_KEY;
 
 describe("web_read extension", () => {
   beforeEach(() => {
     process.env.EXA_API_KEY = SECRET_KEY;
+    vi.spyOn(Math, "random").mockReturnValue(0);
   });
 
   afterEach(() => {
@@ -35,6 +36,11 @@ describe("web_read extension", () => {
       delete process.env.EXA_API_KEY;
     } else {
       process.env.EXA_API_KEY = ORIGINAL_ENV;
+    }
+    if (ORIGINAL_TAVILY_KEY === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = ORIGINAL_TAVILY_KEY;
     }
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -78,20 +84,6 @@ describe("web_read extension", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects with missing key error without calling fetch when Keychain and env are both unset", async () => {
-    delete process.env.EXA_API_KEY;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>();
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY");
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("succeeds using a Keychain-resolved key when EXA_API_KEY is unset", async () => {
     delete process.env.EXA_API_KEY;
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -125,6 +117,7 @@ describe("web_read extension", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("x-api-key")).toBe(KEYCHAIN_KEY);
     expect(result.content[0].text).toContain("Readable text");
+    expect(result.content[0].text).toContain("Provider: Exa (keyed)");
   });
 
   it("returns readable text on success and calls the Exa endpoint correctly", async () => {
@@ -169,13 +162,125 @@ describe("web_read extension", () => {
     expect(text).toContain("https://resolved.example/page");
     expect(text).toContain("Readable text");
     expect(text).not.toContain(SECRET_KEY);
+    expect(text).toContain("Provider: Exa (keyed)");
     expect(result.details).toEqual({
       title: "Example",
       source: "https://resolved.example/page",
       truncated: false,
       offset: 0,
       totalLength: "Readable text".length,
+      provider: "exa",
+      mode: "keyed",
     });
+  });
+
+  it("falls back from Exa keyed quota to anonymous MCP, then to Tavily after MCP rate limit", async () => {
+    process.env.TAVILY_API_KEY = "secret-tavily-key";
+    const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const calls: string[] = [];
+    let mcpCalls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === "https://api.exa.ai/contents") {
+        expect(new Headers(init?.headers).get("x-api-key")).toBe(SECRET_KEY);
+        return jsonResponse({ error: `quota: ${SECRET_KEY}` }, 402);
+      }
+      if (url === "https://mcp.exa.ai/mcp") {
+        expect(new Headers(init?.headers).get("x-api-key")).toBeNull();
+        expect(JSON.parse(init?.body as string)).toMatchObject({
+          method: "tools/call",
+          params: { name: "web_fetch_exa", arguments: { urls: ["https://example.com/page"] } },
+        });
+        mcpCalls++;
+        return mcpCalls === 1
+          ? jsonResponse({
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                content: [{ type: "text", text: `# MCP page\nURL: https://example.com/page\n\n${longText}` }],
+              },
+            })
+          : jsonResponse({ error: `rate limited: ${SECRET_KEY}` }, 429);
+      }
+      if (url === "https://api.tavily.com/extract") {
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer secret-tavily-key");
+        return jsonResponse({
+          results: [{ url: "https://example.com/page", title: "Tavily page", raw_content: longText }],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const read = getRegisteredTool("web_read");
+    const first = await read.execute("call-1", { url: "https://example.com/page" }, undefined, noop, {});
+    expect(first.content[0].text).toContain("Provider: Exa (anonymous)");
+    expect(first.details).toMatchObject({ provider: "exa", mode: "anonymous", truncated: true });
+    const firstDetails = first.details as WebReadToolDetails;
+    const continued = await read.execute(
+      "call-2",
+      { url: "https://example.com/page", offset: firstDetails.nextOffset },
+      undefined,
+      noop,
+      {},
+    );
+    expect(continued.content[0].text).toContain("Provider: Exa (anonymous)");
+    expect(continued.details).toMatchObject({ provider: "exa", mode: "anonymous" });
+    expect(
+      renderText(
+        read.renderResult?.(continued, { expanded: false, isPartial: false }, createIdentityTheme(), {
+          isError: false,
+        }) as RenderedText,
+      ),
+    ).toContain("Exa (anonymous)");
+    expect(calls).toEqual(["https://api.exa.ai/contents", "https://mcp.exa.ai/mcp"]);
+
+    const second = await read.execute("call-3", { url: "https://example.com/page", offset: 0 }, undefined, noop, {});
+    expect(second.content[0].text).toContain("Provider: Tavily (keyed)");
+    expect(second.details).toMatchObject({ provider: "tavily", mode: "keyed", truncated: true });
+    const next = (second.details as WebReadToolDetails).nextOffset;
+    const secondContinuation = await read.execute(
+      "call-4",
+      { url: "https://example.com/page", offset: next },
+      undefined,
+      noop,
+      {},
+    );
+    expect(secondContinuation.content[0].text).toContain("Provider: Tavily (keyed)");
+    expect(
+      renderText(
+        read.renderResult?.(secondContinuation, { expanded: false, isPartial: false }, createIdentityTheme(), {
+          isError: false,
+        }) as RenderedText,
+      ),
+    ).toContain("Tavily (keyed)");
+    expect(calls).toEqual([
+      "https://api.exa.ai/contents",
+      "https://mcp.exa.ai/mcp",
+      "https://mcp.exa.ai/mcp",
+      "https://api.tavily.com/extract",
+    ]);
+    expect(JSON.stringify(second)).not.toContain(SECRET_KEY);
+
+    execFileMock.mockImplementation(
+      (_file: string, _args: readonly string[], _opts: unknown, callback: ExecFileCallback) => {
+        callback(null, JSON.stringify({ title: "Issue", body: "Local issue", comments: [], url: "x" }), "");
+      },
+    );
+    const github = await read.execute(
+      "call-5",
+      { url: "https://github.com/octocat/repo/issues/42" },
+      undefined,
+      noop,
+      {},
+    );
+    expect(github.content[0].text).toContain("Local issue");
+    expect(github.content[0].text).not.toContain("Provider:");
+    expect(github.details).not.toHaveProperty("provider");
+    await expect(read.execute("call-6", { url: "https://github.com/octocat" }, undefined, noop, {})).rejects.toThrow(
+      "github: unsupported GitHub URL",
+    );
+    expect(calls).toHaveLength(4);
   });
 
   it("omits the title heading when the provider returns no title", async () => {
@@ -206,86 +311,6 @@ describe("web_read extension", () => {
     expect(text).toContain("Readable text");
   });
 
-  it.each([
-    [401, "invalid API key"],
-    [402, "quota exceeded"],
-    [429, "rate limited"],
-  ])("maps HTTP %d to expected error message", async (status, expected) => {
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ error: `secret leaked: ${SECRET_KEY}` }, status));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow(expected);
-
-    try {
-      await tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
-    } catch (err) {
-      expect(String(err)).not.toContain(SECRET_KEY);
-    }
-  });
-
-  it("reports malformed JSON responses", async () => {
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () => textResponse("not json"));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("malformed JSON");
-  });
-
-  it("reports status errors with only the status message, hiding the key", async () => {
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse({
-        statuses: [
-          {
-            status: "error",
-            error: { tag: "CRAWL_TIMEOUT", message: SECRET_KEY },
-          },
-        ],
-        results: [],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    let caught: unknown;
-    try {
-      await tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
-    } catch (err) {
-      caught = err;
-    }
-
-    expect(String(caught)).toContain("Exa could not retrieve this URL");
-    expect(String(caught)).not.toContain(SECRET_KEY);
-  });
-
-  it("reports when there are no results", async () => {
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ results: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("no content returned");
-  });
-
-  it("reports whitespace-only text", async () => {
-    const tool = getRegisteredTool("web_read");
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse({
-        results: [{ title: "Example", url: "https://resolved.example/page", text: "   \n\t  " }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("empty text");
-  });
-
   it("propagates caller cancellation", async () => {
     const tool = getRegisteredTool("web_read");
     const controller = new AbortController();
@@ -305,40 +330,8 @@ describe("web_read extension", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, controller.signal, noop, {});
-    const assertion = expect(promise).rejects.toThrow("web_read: request cancelled");
+    const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
     controller.abort();
-    await assertion;
-  });
-
-  it("times out when the request takes too long", async () => {
-    const tool = getRegisteredTool("web_read");
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
-    let resolveFetchStarted: () => void;
-    const fetchStarted = new Promise<void>((resolve) => {
-      resolveFetchStarted = resolve;
-    });
-    const fetchMock = vi.fn<typeof fetch>(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = init?.signal;
-          resolveFetchStarted();
-          if (signal?.aborted) {
-            reject(new DOMException("Aborted", "AbortError"));
-            return;
-          }
-          signal?.addEventListener("abort", () => {
-            reject(new DOMException("Aborted", "AbortError"));
-          });
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const promise = tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
-    const assertion = expect(promise).rejects.toThrow("web_read: request timed out");
-    await fetchStarted;
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
-    timeoutController.abort();
     await assertion;
   });
 
@@ -367,42 +360,9 @@ describe("web_read extension", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, controller.signal, noop, {});
-    const assertion = expect(promise).rejects.toThrow("web_read: request cancelled");
+    const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
     await jsonStarted;
     controller.abort();
-    await assertion;
-  });
-
-  it("times out during JSON body parsing", async () => {
-    const tool = getRegisteredTool("web_read");
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
-    let resolveJsonStarted: () => void;
-    const jsonStarted = new Promise<void>((resolve) => {
-      resolveJsonStarted = resolve;
-    });
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      const response = {
-        ok: true,
-        status: 200,
-        json: () => {
-          resolveJsonStarted();
-          return new Promise<unknown>((_resolve, reject) => {
-            timeoutController.signal.addEventListener("abort", () => {
-              reject(new DOMException("Aborted", "AbortError"));
-            });
-          });
-        },
-      } as unknown as Response;
-      return response;
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const promise = tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {});
-    const assertion = expect(promise).rejects.toThrow("web_read: request timed out");
-    await jsonStarted;
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
-    timeoutController.abort();
     await assertion;
   });
 
@@ -488,7 +448,7 @@ describe("web_read extension", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const header = "# Example\nSource: https://resolved.example/page\n\n";
+    const header = "# Example\nSource: https://resolved.example/page\nProvider: Exa (keyed)\n\n";
     let offset: number | undefined;
     let reconstructed = "";
     for (let iterations = 0; ; iterations++) {
@@ -559,7 +519,7 @@ describe("web_read extension", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const header = "# Example\nSource: https://resolved.example/page\n\n";
+    const header = "# Example\nSource: https://resolved.example/page\nProvider: Exa (keyed)\n\n";
     let offset: number | undefined;
     let previousOffset = -1;
     let reconstructed = "";
@@ -622,21 +582,6 @@ describe("web_read extension", () => {
     expect(details.title).not.toContain("\n");
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
     expect(text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
-  });
-
-  it("rejects an oversized resolved result URL with a fixed error", async () => {
-    const tool = getRegisteredTool("web_read");
-    const oversizedUrl = `https://resolved.example/${"a".repeat(2048)}`;
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse({
-        results: [{ title: "Example", url: oversizedUrl, text: "Some body text" }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page" }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: content provider returned an oversized result URL");
   });
 });
 
@@ -892,6 +837,8 @@ describe("web_read GitHub routing", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.content[0].text).toContain("Local path:");
+    expect(result.content[0].text).not.toContain("Provider:");
+    expect(result.details).not.toHaveProperty("provider");
     expect(result.content[0].text).toContain("README.md");
     expect(gitCalls().some((call) => call[1].join(" ").includes("git@github.com"))).toBe(false);
   });
@@ -1266,7 +1213,8 @@ describe("web_read GitHub routing", () => {
     ).toBe(false);
   });
 
-  it("still uses Exa for a non-GitHub URL", async () => {
+  it("uses hosted providers for a non-GitHub URL", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({

@@ -18,6 +18,7 @@ import {
 describe("web_read extension", () => {
   beforeEach(() => {
     process.env.EXA_API_KEY = SECRET_KEY;
+    vi.spyOn(Math, "random").mockReturnValue(0);
   });
 
   afterEach(() => {

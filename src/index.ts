@@ -20,7 +20,7 @@ export default function activate(api: ExtensionAPI): void {
 
   const exa = createExaMcpProvider();
   const tavily = createTavilyProvider();
-  // Resolve credentials only when search runs; web_read keeps its legacy path.
+  // Resolve credentials only when a hosted search or read runs.
   let routerPromise: Promise<ReturnType<typeof createProviderRouter>> | undefined;
   const getRouter = () =>
     (routerPromise ??= createExaKeyedRoute().then((keyed) => {
@@ -28,7 +28,7 @@ export default function activate(api: ExtensionAPI): void {
       return createProviderRouter([exa, tavily]);
     }));
 
-  api.registerTool(createWebReadTool(cache, githubReader));
+  api.registerTool(createWebReadTool(cache, githubReader, getRouter));
   api.registerTool(createWebSearchTool(getRouter));
 
   registerScryerCommand(api);
