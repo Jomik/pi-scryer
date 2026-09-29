@@ -65,8 +65,8 @@ async function request(
     if (response.status >= 500) throw new ProviderError("transient");
     const error = !key && record(body) && record(body.error) ? body.error : undefined;
     const code = typeof error?.code === "string" ? error.code.toLowerCase() : undefined;
-    if (response.status === 402 || code?.includes("quota")) throw new ProviderError("quota");
-    if (response.status === 429 || code) {
+    if (response.status === 402 || (code && /quota|credit|payment/.test(code))) throw new ProviderError("quota");
+    if (response.status === 429 || (code && /(^|[_-])(limit|rate|throttl)/.test(code))) {
       const seconds = error?.retry_after_seconds;
       const retryAfterMs =
         typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
