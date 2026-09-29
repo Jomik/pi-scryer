@@ -12,6 +12,7 @@ import {
   noop,
   ORIGINAL_ENV,
   SECRET_KEY,
+  stubKeyedExaFetch,
   type WebReadToolDetails,
 } from "./harness";
 
@@ -40,7 +41,7 @@ describe("web_read extension", () => {
         results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const chunks: WebReadToolDetails[] = [];
     let offset: number | undefined;
@@ -81,7 +82,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",
@@ -112,7 +113,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://example.com/page-a", text: longTextA }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const firstA = await tool.execute(
       "call-1",
@@ -140,7 +141,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const toolA = getRegisteredTool("web_read");
     const firstA = await toolA.execute(
@@ -176,7 +177,7 @@ describe("web_read extension", () => {
       const text = url.includes("page-a") ? longTextA : longTextB;
       return jsonResponse({ results: [{ title: "Example", url, text }] });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const [firstA, firstB] = await Promise.all([
       tool.execute("call-1", { url: "https://example.com/page-a" }, new AbortController().signal, noop, {}),
@@ -210,7 +211,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: "short text" }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -236,7 +237,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://example.com/page-a", text: longTextA }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const firstA = await tool.execute(
       "call-1",
@@ -279,7 +280,7 @@ describe("web_read extension", () => {
       const label = url.match(/page-(\d+)/)?.[1] ?? "x";
       return jsonResponse({ results: [{ title: "Example", url, text: pageText(label) }] });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const nextOffsets = new Map<string, number>();
     for (let i = 0; i < 5; i++) {
@@ -344,7 +345,7 @@ describe("web_read extension", () => {
       const text = url.includes("page-a") ? longTextA : longTextB;
       return jsonResponse({ results: [{ title: "Example", url, text }] });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     let offsetA: number | undefined;
     let truncatedA = true;
@@ -398,7 +399,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",
@@ -438,7 +439,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",
@@ -482,7 +483,7 @@ describe("web_read extension", () => {
       const idx = Number(url.match(/page-(\d+)/)?.[1] ?? "0");
       return jsonResponse({ results: [{ title: "Example", url, text: textFor(idx) }] });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     for (const url of urls) {
       await tool.execute("call-1", { url }, new AbortController().signal, noop, {});
@@ -520,7 +521,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",
@@ -583,7 +584,7 @@ describe("web_read extension", () => {
           results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
         }),
       );
-      vi.stubGlobal("fetch", fetchMock);
+      stubKeyedExaFetch(fetchMock);
 
       // Cache initialization fails (invalid TMPDIR), but the read itself must
       // still succeed with a valid chunk/nextOffset; the failed cache write is
@@ -662,7 +663,7 @@ describe("web_read extension", () => {
         results: [{ title: "Example", url: "https://resolved.example/page", text: longText }],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",

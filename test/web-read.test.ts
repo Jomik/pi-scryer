@@ -13,6 +13,7 @@ import {
   type RenderedText,
   renderText,
   SECRET_KEY,
+  stubKeyedExaFetch,
   type WebReadToolDetails,
 } from "./harness";
 
@@ -102,7 +103,7 @@ describe("web_read extension", () => {
         ],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -133,7 +134,7 @@ describe("web_read extension", () => {
         ],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -295,7 +296,7 @@ describe("web_read extension", () => {
         ],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -327,7 +328,7 @@ describe("web_read extension", () => {
           });
         }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, controller.signal, noop, {});
     const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
@@ -357,7 +358,7 @@ describe("web_read extension", () => {
       } as unknown as Response;
       return response;
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const promise = tool.execute("call-1", { url: "https://example.com/page" }, controller.signal, noop, {});
     const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
@@ -382,7 +383,7 @@ describe("web_read extension", () => {
         ],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -416,7 +417,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: "0123456789" }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const first = await tool.execute(
       "call-1",
@@ -446,7 +447,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const header = "# Example\nSource: https://resolved.example/page\nProvider: Exa (keyed)\n\n";
     let offset: number | undefined;
@@ -482,7 +483,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     let offset: number | undefined;
     for (let iterations = 0; ; iterations++) {
@@ -517,7 +518,7 @@ describe("web_read extension", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const header = "# Example\nSource: https://resolved.example/page\nProvider: Exa (keyed)\n\n";
     let offset: number | undefined;
@@ -565,7 +566,7 @@ describe("web_read extension", () => {
         results: [{ title: rawTitle, url: "https://resolved.example/page", text: "Short body text" }],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",
@@ -1221,7 +1222,7 @@ describe("web_read GitHub routing", () => {
         results: [{ title: "Example", url: "https://example.com/page", text: "page body text" }],
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubKeyedExaFetch(fetchMock);
 
     const result = await tool.execute(
       "call-1",

@@ -214,6 +214,22 @@ export function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** Exhaust anonymous read routes without adding their calls to keyed Exa fixture counts. */
+export function stubKeyedExaFetch(fetchMock: typeof fetch): void {
+  const wrappedFetch: typeof fetch = (input, init) => {
+    const url = String(input);
+    if (
+      url === "https://mcp.exa.ai/mcp" ||
+      (url.startsWith("https://api.tavily.com/") &&
+        new Headers(init?.headers).get("X-Tavily-Access-Mode") === "keyless")
+    ) {
+      return Promise.resolve(jsonResponse({ error: "rate limited" }, 429));
+    }
+    return fetchMock(input, init);
+  };
+  vi.stubGlobal("fetch", wrappedFetch);
+}
+
 export function textResponse(body: string, status = 200): Response {
   return new Response(body, { status });
 }
