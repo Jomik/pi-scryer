@@ -1,7 +1,9 @@
-import { readdir, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createContinuationCache } from "../src/continuation-cache";
+import type { AccessMode, ProviderName } from "../src/provider-routing";
 import {
   getRegisteredTool,
   getRegisteredToolWithShutdown,
@@ -701,5 +703,90 @@ describe("web_read extension", () => {
 
     // The corrupt cache file was removed rather than left behind.
     await expect(stat(filePath)).rejects.toThrow();
+  });
+});
+
+describe("continuation cache attribution", () => {
+  const url = "https://example.com/page";
+  const page = { title: "Example", url, text: "Full page text" };
+
+  async function cachedFile(before: string[]): Promise<string> {
+    const dirs = (await listCacheDirNames()).filter((name) => !before.includes(name));
+    expect(dirs).toHaveLength(1);
+    const files = (await readdir(join(tmpdir(), dirs[0]))).filter((name) => name.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    return join(tmpdir(), dirs[0], files[0]);
+  }
+
+  it.each([
+    ["exa", "keyed"],
+    ["exa", "anonymous"],
+    ["tavily", "keyed"],
+    ["tavily", "anonymous"],
+  ] as const)("round-trips %s/%s attribution through the private disk file", async (provider, mode) => {
+    const before = await listCacheDirNames();
+    const cache = createContinuationCache();
+    try {
+      const result = { ...page, provider, mode };
+      await cache.writeCachedResult(url, result);
+      const file = await cachedFile(before);
+      expect(JSON.parse(await readFile(file, "utf-8"))).toEqual(result);
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+      expect(await cache.readCachedResult(url)).toEqual(result);
+    } finally {
+      await cache.cleanup();
+    }
+  });
+
+  it("keeps legacy and GitHub entries without attribution valid", async () => {
+    const before = await listCacheDirNames();
+    const cache = createContinuationCache();
+    try {
+      await cache.writeCachedResult(url, page);
+      const file = await cachedFile(before);
+      expect(JSON.parse(await readFile(file, "utf-8"))).toEqual(page);
+      expect(await cache.readCachedResult(url)).toEqual(page);
+    } finally {
+      await cache.cleanup();
+    }
+  });
+
+  it.each([
+    { provider: "other", mode: "keyed" },
+    { provider: "exa", mode: "other" },
+    { provider: "exa" },
+    { mode: "anonymous" },
+    { provider: null, mode: "keyed" },
+    { provider: "exa", mode: null },
+  ])("removes a cache file with invalid or partial attribution: %j", async (metadata) => {
+    const before = await listCacheDirNames();
+    const cache = createContinuationCache();
+    try {
+      await cache.writeCachedResult(url, page);
+      const file = await cachedFile(before);
+      await writeFile(file, JSON.stringify({ ...page, ...metadata }));
+      expect(await cache.readCachedResult(url)).toBeUndefined();
+      await expect(stat(file)).rejects.toThrow();
+      expect(await cache.readCachedResult(url)).toBeUndefined();
+    } finally {
+      await cache.cleanup();
+    }
+  });
+
+  it("does not write partial or invalid attribution", async () => {
+    const cache = createContinuationCache();
+    try {
+      for (const metadata of [{ provider: "exa" }, { mode: "keyed" }, { provider: "exa", mode: "invalid" }]) {
+        await expect(
+          cache.writeCachedResult(url, { ...page, ...metadata } as typeof page & {
+            provider: ProviderName;
+            mode: AccessMode;
+          }),
+        ).rejects.toThrow("invalid cache attribution");
+      }
+      expect(await cache.readCachedResult(url)).toBeUndefined();
+    } finally {
+      await cache.cleanup();
+    }
   });
 });
