@@ -76,25 +76,39 @@ describe("Tavily provider", () => {
   });
 
   it.each([
-    [402, { error: { message: secret } }, "quota", undefined],
-    [400, { error: { code: "QUOTA_EXCEEDED", message: secret } }, "quota", undefined],
-    [401, { detail: secret }, "invalid-credentials", undefined],
-    [403, { detail: secret }, "invalid-credentials", undefined],
-    [429, { error: { retry_after_seconds: 4, message: secret } }, "rate-limit", 4000],
-    [503, { detail: secret }, "transient", undefined],
+    [402, { detail: { error: secret } }, "quota", undefined],
+    [400, { detail: { error: secret } }, "transient", undefined],
+    [400, { error: { code: "QUOTA_EXCEEDED", message: secret } }, "transient", undefined],
+    [401, { detail: { error: secret } }, "invalid-credentials", undefined],
+    [403, { detail: { error: secret } }, "invalid-credentials", undefined],
+    [432, { detail: { error: secret } }, "invalid-credentials", undefined],
+    [433, { detail: { error: secret } }, "invalid-credentials", undefined],
+    [429, { detail: { error: secret } }, "rate-limit", undefined],
+    [503, { detail: { error: secret } }, "transient", undefined],
   ] as const)("classifies keyed HTTP %i without leaking data", async (status, body, kind, retryAfterMs) => {
     process.env.TAVILY_API_KEY = secret;
     mockFetch(body, status);
     await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError(kind, retryAfterMs));
   });
 
-  it("classifies a keyless limit envelope and its retry delay even with HTTP 200", async () => {
+  it("classifies non-OK keyless limit codes and retry delays without leaking data", async () => {
     process.env.TAVILY_API_KEY = secret;
-    mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } });
-    await expect(createTavilyProvider().anonymous?.read(pageUrl)).rejects.toMatchObject({
-      kind: "rate-limit",
-      retryAfterMs: 12000,
-    });
+    mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400);
+    await expect(createTavilyProvider().anonymous?.read(pageUrl)).rejects.toEqual(
+      new ProviderError("rate-limit", 12000),
+    );
+  });
+
+  it("does not classify success envelopes as errors", async () => {
+    mockFetch({ results: [], error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } });
+    await expect(createTavilyProvider().anonymous?.search("query")).resolves.toEqual([]);
+  });
+
+  it("classifies keyless quota codes and HTTP 429", async () => {
+    mockFetch({ error: { code: "QUOTA_EXCEEDED", message: secret } }, 400);
+    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("quota"));
+    mockFetch({ error: { message: secret } }, 429);
+    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
   });
 
   it.each([

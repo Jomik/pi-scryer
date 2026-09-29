@@ -61,18 +61,20 @@ async function request(
   }
   if (combined.aborted) cancelled();
 
-  if (response.status >= 500) throw new ProviderError("transient");
-  const error = record(body) && record(body.error) ? body.error : undefined;
-  const code = typeof error?.code === "string" ? error.code.toLowerCase() : undefined;
-  if (response.status === 402 || code?.includes("quota")) throw new ProviderError("quota");
-  if (response.status === 429 || (!key && code)) {
-    const seconds = error?.retry_after_seconds;
-    const retryAfterMs =
-      typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
-    throw new ProviderError("rate-limit", retryAfterMs);
+  if (!response.ok) {
+    if (response.status >= 500) throw new ProviderError("transient");
+    const error = !key && record(body) && record(body.error) ? body.error : undefined;
+    const code = typeof error?.code === "string" ? error.code.toLowerCase() : undefined;
+    if (response.status === 402 || code?.includes("quota")) throw new ProviderError("quota");
+    if (response.status === 429 || code) {
+      const seconds = error?.retry_after_seconds;
+      const retryAfterMs =
+        typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+      throw new ProviderError("rate-limit", retryAfterMs);
+    }
+    if (key && [401, 403, 432, 433].includes(response.status)) throw new ProviderError("invalid-credentials");
+    throw new ProviderError("transient");
   }
-  if (key && (response.status === 401 || response.status === 403)) throw new ProviderError("invalid-credentials");
-  if (!response.ok) throw new ProviderError("transient");
   return body;
 }
 
