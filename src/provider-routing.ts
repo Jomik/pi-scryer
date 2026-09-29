@@ -83,16 +83,12 @@ function eligible(route: RouteState): boolean {
 
 /** Holds route availability in memory for the lifetime of this router. */
 export function createProviderRouter(providers: WebProvider[]) {
-  const groups = providers.map((provider) => {
-    const routes: RouteState[] = [];
-    if (provider.keyed) {
-      routes.push({ provider: provider.name, mode: "keyed", route: provider.keyed, retryAt: 0 });
-    }
-    if (provider.anonymous) {
-      routes.push({ provider: provider.name, mode: "anonymous", route: provider.anonymous, retryAt: 0 });
-    }
-    return routes;
-  });
+  const routes = providers.flatMap((provider): RouteState[] => [
+    ...(provider.anonymous
+      ? [{ provider: provider.name, mode: "anonymous" as const, route: provider.anonymous, retryAt: 0 }]
+      : []),
+    ...(provider.keyed ? [{ provider: provider.name, mode: "keyed" as const, route: provider.keyed, retryAt: 0 }] : []),
+  ]);
 
   async function run<T>(
     operation: (route: ProviderRoute) => Promise<T>,
@@ -100,19 +96,21 @@ export function createProviderRouter(providers: WebProvider[]) {
     isEmpty: (value: T) => boolean,
   ): Promise<RoutedResult<T>> {
     abortIfRequested(signal);
-    const available = groups.filter((routes) => routes.some(eligible));
-    if (available.length === 0) {
+    const anonymous = routes.filter((state) => state.mode === "anonymous" && eligible(state));
+    const keyed = routes.filter((state) => state.mode === "keyed" && eligible(state));
+    if (anonymous.length + keyed.length === 0) {
       throw new Error("Web providers unavailable: no eligible routes");
     }
-    // The remaining providers retain their supplied order; routes within each
-    // provider always run keyed before anonymous.
-    const first = Math.floor(Math.random() * available.length);
-    const ordered = [available[first], ...available.filter((_, index) => index !== first)];
+    const chooseFirst = (available: RouteState[]) => {
+      if (available.length === 0) return available;
+      const first = Math.floor(Math.random() * available.length);
+      return [available[first], ...available.filter((_, index) => index !== first)];
+    };
     const failures: string[] = [];
     let empty: RoutedResult<T> | undefined;
 
-    for (const routes of ordered) {
-      for (const state of routes) {
+    for (const tier of [anonymous, keyed]) {
+      for (const state of chooseFirst(tier)) {
         abortIfRequested(signal);
         if (!eligible(state)) {
           continue;

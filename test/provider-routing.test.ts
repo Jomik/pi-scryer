@@ -39,38 +39,46 @@ describe("provider routing", () => {
   });
 
   it.each([
-    [0, ["exa/keyed", "exa/anonymous", "tavily/keyed", "tavily/anonymous"]],
-    [0.99, ["tavily/keyed", "tavily/anonymous", "exa/keyed", "exa/anonymous"]],
-  ])("chooses a provider randomly and tries its routes sequentially (%s)", async (random, expected) => {
-    vi.spyOn(Math, "random").mockReturnValue(random as number);
+    [0, 0, ["exa/anonymous", "tavily/anonymous", "exa/keyed", "tavily/keyed"]],
+    [0.99, 0.99, ["tavily/anonymous", "exa/anonymous", "tavily/keyed", "exa/keyed"]],
+  ])("randomizes each tier independently and attempts sequentially (%s, %s)", async (anonDraw, keyedDraw, expected) => {
+    vi.spyOn(Math, "random").mockReturnValueOnce(anonDraw).mockReturnValueOnce(keyedDraw);
     const calls: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const failed = (label: string) =>
       route(async () => {
         calls.push(label);
+        await pending;
         throw new ProviderError("transient");
       });
     const providers: WebProvider[] = [
       { name: "exa", keyed: failed("exa/keyed"), anonymous: failed("exa/anonymous") },
-      {
-        name: "tavily",
-        keyed: failed("tavily/keyed"),
-        anonymous: route(async () => {
-          calls.push("tavily/anonymous");
-          if (random === 0.99) {
-            throw new ProviderError("transient");
-          }
-          return [hit];
-        }),
-      },
+      { name: "tavily", keyed: failed("tavily/keyed"), anonymous: failed("tavily/anonymous") },
     ];
-    await (random === 0.99
-      ? expect(createProviderRouter(providers).search("q")).rejects.toThrow("Web providers unavailable")
-      : expect(createProviderRouter(providers).search("q")).resolves.toEqual({
-          value: [hit],
-          provider: "tavily",
-          mode: "anonymous",
-        }));
+    const result = createProviderRouter(providers).search("q");
+    expect(calls).toEqual([expected[0]]);
+    release();
+    await expect(result).rejects.toThrow("Web providers unavailable");
     expect(calls).toEqual(expected);
+  });
+
+  it("uses only anonymous routes without configured keys", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const calls: string[] = [];
+    const failed = (name: string) =>
+      route(async () => {
+        calls.push(name);
+        throw new ProviderError("transient");
+      });
+    const router = createProviderRouter([
+      { name: "exa", anonymous: failed("exa/anonymous") },
+      { name: "tavily", anonymous: failed("tavily/anonymous") },
+    ]);
+    await expect(router.search("q")).rejects.toThrow("Web providers unavailable");
+    expect(calls).toEqual(["tavily/anonymous", "exa/anonymous"]);
   });
 
   it("does not start fallback until a pending route fails, and passes the caller signal", async () => {
@@ -84,14 +92,14 @@ describe("provider routing", () => {
     );
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(undefined, first), anonymous: route(undefined, second) },
+      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
     ]);
     const signal = new AbortController().signal;
     const pending = router.read(page.url, signal);
     expect(first).toHaveBeenCalledWith(page.url, signal);
     expect(second).not.toHaveBeenCalled();
     failFirst(new ProviderError("transient"));
-    await expect(pending).resolves.toEqual({ value: page, provider: "exa", mode: "anonymous" });
+    await expect(pending).resolves.toEqual({ value: page, provider: "exa", mode: "keyed" });
     expect(second).toHaveBeenCalledWith(page.url, signal);
   });
 
@@ -113,6 +121,29 @@ describe("provider routing", () => {
     expect(keyed).toHaveBeenCalledTimes(1);
     expect(anonymous).toHaveBeenCalledTimes(1);
     expect(other).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares route cooldown across search and read without disabling other routes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const limitedSearch = vi.fn<ProviderRoute["search"]>(async () => {
+      throw new ProviderError("rate-limit", 5_000);
+    });
+    const limitedRead = vi.fn<ProviderRoute["read"]>(async () => page);
+    const otherRead = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([
+      { name: "exa", anonymous: route(limitedSearch, limitedRead) },
+      { name: "tavily", anonymous: route(async () => [hit], otherRead) },
+    ]);
+    await expect(router.search("q")).resolves.toMatchObject({ provider: "tavily" });
+    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "tavily" });
+    expect(limitedRead).not.toHaveBeenCalled();
+    expect(otherRead).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5_000);
+    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "exa" });
+    expect(limitedRead).toHaveBeenCalledTimes(1);
+    expect(limitedSearch).toHaveBeenCalledTimes(1);
   });
 
   it("skips a rate-limited route until retry-after, then retries it", async () => {
@@ -233,9 +264,9 @@ describe("provider routing", () => {
     const first = vi.fn<ProviderRoute["read"]>(async () => invalid as ReadPage);
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(undefined, first), anonymous: route(undefined, second) },
+      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
     ]);
-    await expect(router.read(page.url)).resolves.toEqual({ value: page, provider: "exa", mode: "anonymous" });
+    await expect(router.read(page.url)).resolves.toEqual({ value: page, provider: "exa", mode: "keyed" });
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
   });
@@ -257,11 +288,11 @@ describe("provider routing", () => {
     });
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(undefined, first), anonymous: route(undefined, second) },
+      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
     ]);
     await expect(router.read(page.url, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(second).not.toHaveBeenCalled();
-    await expect(router.read(page.url)).resolves.toMatchObject({ mode: "anonymous" });
+    await expect(router.read(page.url)).resolves.toMatchObject({ mode: "keyed" });
     expect(first).toHaveBeenCalledTimes(2);
   });
 
@@ -278,12 +309,12 @@ describe("provider routing", () => {
       throw new ProviderError("quota");
     });
     const anonymous = vi.fn<ProviderRoute["search"]>(async () => [hit]);
-    const router = createProviderRouter([{ name: "exa", keyed: route(keyed), anonymous: route(anonymous) }]);
+    const router = createProviderRouter([{ name: "exa", anonymous: route(keyed), keyed: route(anonymous) }]);
     const alreadyAborted = new AbortController();
     alreadyAborted.abort();
     await expect(router.search("q", alreadyAborted.signal)).rejects.toMatchObject({ name: "AbortError" });
     await expect(router.search("q", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
-    await expect(router.search("q")).resolves.toMatchObject({ mode: "anonymous" });
+    await expect(router.search("q")).resolves.toMatchObject({ mode: "keyed" });
     expect(keyed).toHaveBeenCalledTimes(2);
     expect(anonymous).toHaveBeenCalledTimes(1);
   });
@@ -305,7 +336,7 @@ describe("provider routing", () => {
         }),
       },
     ]);
-    await expect(router.search("q")).rejects.toThrow("exa/keyed: unexpected failure; tavily/anonymous: quota");
+    await expect(router.search("q")).rejects.toThrow("tavily/anonymous: quota; exa/keyed: unexpected failure");
     await expect(router.search("q")).rejects.not.toThrow(secret);
     await expect(router.search("q")).rejects.toThrow("exa/keyed: unexpected failure");
   });

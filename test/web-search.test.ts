@@ -55,7 +55,31 @@ describe("web_search extension", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("routes Exa keyed quota to anonymous MCP, then MCP rate limit to Tavily on the same activation", async () => {
+  it("sends no credentials when neither key is configured", async () => {
+    delete process.env.EXA_API_KEY;
+    delete process.env.TAVILY_API_KEY;
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        const url = String(input);
+        calls.push(url);
+        const headers = new Headers(init?.headers);
+        expect(headers.get("x-api-key")).toBeNull();
+        expect(headers.get("Authorization")).toBeNull();
+        if (url === "https://mcp.exa.ai/mcp") return jsonResponse({ error: "rate limited" }, 429);
+        expect(url).toBe("https://api.tavily.com/search");
+        expect(headers.get("X-Tavily-Access-Mode")).toBe("keyless");
+        return jsonResponse({ results: [{ title: "Keyless", url: "https://example.com", content: "Text" }] });
+      }),
+    );
+    const result = await getRegisteredTool("web_search").execute("call-1", { query: "example" }, undefined, noop, {});
+    expect(result.details).toMatchObject({ provider: "tavily", mode: "anonymous" });
+    expect(calls).toEqual(["https://mcp.exa.ai/mcp", "https://api.tavily.com/search"]);
+  });
+
+  it("uses anonymous first, then keyed fallback after both anonymous routes are unavailable", async () => {
     process.env.TAVILY_API_KEY = "secret-tavily-key";
     vi.spyOn(Math, "random").mockReturnValue(0);
     const calls: string[] = [];
@@ -67,6 +91,7 @@ describe("web_search extension", () => {
         return jsonResponse({ error: `quota: ${SECRET_KEY}` }, 402);
       }
       if (url === "https://mcp.exa.ai/mcp") {
+        expect(new Headers(init?.headers).get("x-api-key")).toBeNull();
         expect(JSON.parse(init?.body as string)).toMatchObject({
           method: "tools/call",
           params: { name: "web_search_exa", arguments: { query: "example", numResults: 5 } },
@@ -82,7 +107,12 @@ describe("web_search extension", () => {
           : jsonResponse({ error: `rate limited: ${SECRET_KEY}` }, 429);
       }
       if (url === "https://api.tavily.com/search") {
-        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer secret-tavily-key");
+        const headers = new Headers(init?.headers);
+        if (headers.get("X-Tavily-Access-Mode") === "keyless") {
+          expect(headers.get("Authorization")).toBeNull();
+          return jsonResponse({ error: "anonymous rate limit" }, 429);
+        }
+        expect(headers.get("Authorization")).toBe("Bearer secret-tavily-key");
         return jsonResponse({
           results: [{ title: "Tavily hit", url: "https://example.com/tavily", content: "Tavily excerpt" }],
         });
@@ -102,9 +132,10 @@ describe("web_search extension", () => {
     expect(second.content[0].text).toContain("1. Tavily hit\nSource: https://example.com/tavily\nTavily excerpt");
     expect(second.details).toEqual({ resultCount: 1, omitted: 0, truncated: false, provider: "tavily", mode: "keyed" });
     expect(calls).toEqual([
+      "https://mcp.exa.ai/mcp",
+      "https://mcp.exa.ai/mcp",
+      "https://api.tavily.com/search",
       "https://api.exa.ai/search",
-      "https://mcp.exa.ai/mcp",
-      "https://mcp.exa.ai/mcp",
       "https://api.tavily.com/search",
     ]);
     expect(JSON.stringify([first, second])).not.toContain(SECRET_KEY);

@@ -175,7 +175,7 @@ describe("web_read extension", () => {
     });
   });
 
-  it("falls back from Exa keyed quota to anonymous MCP, then to Tavily after MCP rate limit", async () => {
+  it("uses anonymous reads first, then keyed fallback after both anonymous routes are unavailable", async () => {
     process.env.TAVILY_API_KEY = "secret-tavily-key";
     const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
     const calls: string[] = [];
@@ -205,7 +205,12 @@ describe("web_read extension", () => {
           : jsonResponse({ error: `rate limited: ${SECRET_KEY}` }, 429);
       }
       if (url === "https://api.tavily.com/extract") {
-        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer secret-tavily-key");
+        const headers = new Headers(init?.headers);
+        if (headers.get("X-Tavily-Access-Mode") === "keyless") {
+          expect(headers.get("Authorization")).toBeNull();
+          return jsonResponse({ error: "anonymous rate limit" }, 429);
+        }
+        expect(headers.get("Authorization")).toBe("Bearer secret-tavily-key");
         return jsonResponse({
           results: [{ url: "https://example.com/page", title: "Tavily page", raw_content: longText }],
         });
@@ -234,7 +239,7 @@ describe("web_read extension", () => {
         }) as RenderedText,
       ),
     ).toContain("Exa (anonymous)");
-    expect(calls).toEqual(["https://api.exa.ai/contents", "https://mcp.exa.ai/mcp"]);
+    expect(calls).toEqual(["https://mcp.exa.ai/mcp"]);
 
     const second = await read.execute("call-3", { url: "https://example.com/page", offset: 0 }, undefined, noop, {});
     expect(second.content[0].text).toContain("Provider: Tavily (keyed)");
@@ -256,9 +261,10 @@ describe("web_read extension", () => {
       ),
     ).toContain("Tavily (keyed)");
     expect(calls).toEqual([
+      "https://mcp.exa.ai/mcp",
+      "https://mcp.exa.ai/mcp",
+      "https://api.tavily.com/extract",
       "https://api.exa.ai/contents",
-      "https://mcp.exa.ai/mcp",
-      "https://mcp.exa.ai/mcp",
       "https://api.tavily.com/extract",
     ]);
     expect(JSON.stringify(second)).not.toContain(SECRET_KEY);
@@ -281,7 +287,7 @@ describe("web_read extension", () => {
     await expect(read.execute("call-6", { url: "https://github.com/octocat" }, undefined, noop, {})).rejects.toThrow(
       "github: unsupported GitHub URL",
     );
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
   });
 
   it("omits the title heading when the provider returns no title", async () => {
