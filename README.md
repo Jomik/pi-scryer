@@ -50,10 +50,11 @@ empty, or inaccessible, the trimmed `EXA_API_KEY` environment variable is
 used instead. On non-macOS platforms, only the environment variable is
 consulted. The key itself is never shown in any notification, and never
 stored or cached in any project, session, or cache file. Anonymous requests
-never send a configured API key. Credential changes (including `/scryer login`
-and `/scryer logout`) require restarting Pi to change active routes: the router
-is initialized on the first hosted search or read. Restarting also resets route
-availability.
+never send a configured API key. Tavily captures `TAVILY_API_KEY` when the
+extension activates; Exa's keyed-route presence is determined on the first
+hosted search or read. Credential changes (including `/scryer login` and
+`/scryer logout`) require restarting Pi to change active routes. Restarting
+also resets route availability.
 
 ## Provider routing
 
@@ -179,6 +180,7 @@ source and extracted text; the title is included only when available.
 `web_search(query)` searches the web through Exa or Tavily and returns up to 5
 results as Markdown. Every valid result has a source URL; a title and a short
 excerpt (up to 500 characters) are included when the provider supplies them.
+Titles are collapsed to one line and truncated to at most 200 characters.
 Malformed search entries may be omitted, and the output reports the omitted
 count.
 
