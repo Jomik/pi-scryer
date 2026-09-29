@@ -153,13 +153,11 @@ export function createWebReadTool(cache: ContinuationCache, githubReader: GitHub
       let servedFromCache = false;
       if (offset > 0) {
         const cached = await cache.readCachedResult(normalizedUrl);
-        if (cached) {
-          result = cached;
-          servedFromCache = true;
-        } else {
-          const fromReader = await githubReader.read(normalizedUrl, signal);
-          result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
+        if (!cached) {
+          throw new Error("web_read: continuation expired; restart with offset 0");
         }
+        result = cached;
+        servedFromCache = true;
       } else {
         const fromReader = await githubReader.read(normalizedUrl, signal);
         result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));

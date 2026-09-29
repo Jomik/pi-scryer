@@ -451,20 +451,28 @@ describe("web_read extension", () => {
     expect(details.nextOffset).toBeLessThan(longText.length);
   });
 
-  it("rejects an offset at or beyond the end of the page content", async () => {
+  it("rejects continuation of a completed short read without re-fetching", async () => {
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: "0123456789" }] }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page", offset: 10 }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
+    const first = await tool.execute(
+      "call-1",
+      { url: "https://example.com/page" },
+      new AbortController().signal,
+      noop,
+      {},
+    );
+    expect((first.details as WebReadToolDetails).nextOffset).toBeUndefined();
 
-    await expect(
-      tool.execute("call-1", { url: "https://example.com/page", offset: 20 }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
+    for (const offset of [10, 20]) {
+      await expect(
+        tool.execute("call-1", { url: "https://example.com/page", offset }, new AbortController().signal, noop, {}),
+      ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("reconstructs unicode content across a chunk boundary without corruption", async () => {
@@ -1221,25 +1229,20 @@ describe("web_read GitHub routing", () => {
     ).toBe(false);
   });
 
-  it("blocks a malformed raw.githubusercontent.com URL from reaching Exa on a fresh offset>0 request (cache miss)", async () => {
+  it.each([
+    "https://raw.githubusercontent.com/octocat/private-repo",
+    "https://github.com/octocat/private-repo/issues/42",
+  ])("does not route a GitHub continuation cache miss to GitHub or Exa: %s", async (url) => {
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(
-      tool.execute(
-        "call-1",
-        { url: "https://raw.githubusercontent.com/octocat/private-repo", offset: 10 },
-        new AbortController().signal,
-        noop,
-        {},
-      ),
-    ).rejects.toThrow("raw URL is missing a ref");
+    await expect(tool.execute("call-1", { url, offset: 10 }, new AbortController().signal, noop, {})).rejects.toThrow(
+      "web_read: continuation expired; restart with offset 0",
+    );
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(
-      gitCalls().some((call) => ["repo", "clone", "init", "fetch", "checkout", "ls-remote"].includes(call[1][0])),
-    ).toBe(false);
+    expect(gitCalls()).toHaveLength(0);
   });
 
   it("blocks a non-raw githubusercontent.com host from ever reaching Exa, failing closed", async () => {

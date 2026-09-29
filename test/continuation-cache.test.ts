@@ -103,16 +103,12 @@ describe("web_read extension", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("misses the cache and re-fetches when continuing a different URL", async () => {
+  it("rejects a continuation for a different URL without fetching", async () => {
     const tool = getRegisteredTool("web_read");
     const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
-    const longTextB = Array.from({ length: 5000 }, (_, i) => `b-line ${i}`).join("\n");
-    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
-      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
-      const url = body.urls[0];
-      const text = url.includes("page-a") ? longTextA : longTextB;
-      return jsonResponse({ results: [{ title: "Example", url, text }] });
-    });
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://example.com/page-a", text: longTextA }] }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const firstA = await tool.execute(
@@ -124,18 +120,19 @@ describe("web_read extension", () => {
     );
     const detailsA = firstA.details as WebReadToolDetails;
     expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    await tool.execute(
-      "call-1",
-      { url: "https://example.com/page-b", offset: detailsA.nextOffset },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page-b", offset: detailsA.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("starts with an empty cache in a new extension instance and re-fetches", async () => {
+  it("rejects a continuation in a new extension instance without fetching", async () => {
     const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ results: [{ title: "Example", url: "https://resolved.example/page", text: longText }] }),
@@ -154,14 +151,16 @@ describe("web_read extension", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const toolB = getRegisteredTool("web_read");
-    await toolB.execute(
-      "call-1",
-      { url: "https://example.com/page", offset: detailsA.nextOffset },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(
+      toolB.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: detailsA.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps two different long pages independently continuable without re-fetching, even after concurrent initial reads", async () => {
@@ -224,21 +223,16 @@ describe("web_read extension", () => {
 
     await expect(
       tool.execute("call-1", { url: "https://example.com/page", offset: 100 }, new AbortController().signal, noop, {}),
-    ).rejects.toThrow("web_read: offset is at or beyond the end of the page content");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not poison the cache when an unrelated continuation fetch fails", async () => {
+  it("does not poison the cache when an unrelated continuation is missing", async () => {
     const tool = getRegisteredTool("web_read");
     const longTextA = Array.from({ length: 5000 }, (_, i) => `a-line ${i}`).join("\n");
-    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
-      const body = JSON.parse((init?.body as string) ?? "{}") as { urls: string[] };
-      const url = body.urls[0];
-      if (url.includes("page-a")) {
-        return jsonResponse({ results: [{ title: "Example", url, text: longTextA }] });
-      }
-      return jsonResponse({ error: "boom" }, 500);
-    });
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [{ title: "Example", url: "https://example.com/page-a", text: longTextA }] }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const firstA = await tool.execute(
@@ -259,8 +253,8 @@ describe("web_read extension", () => {
         noop,
         {},
       ),
-    ).rejects.toThrow("request failed with status 500");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const continuedA = await tool.execute(
       "call-1",
@@ -269,7 +263,7 @@ describe("web_read extension", () => {
       noop,
       {},
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect((continuedA.details as WebReadToolDetails).offset).toBe(detailsA.nextOffset);
   });
 
@@ -324,15 +318,17 @@ describe("web_read extension", () => {
     }
     expect(fetchMock).toHaveBeenCalledTimes(6);
 
-    // page-1 was evicted: continuing it must re-fetch.
-    await tool.execute(
-      "call-1",
-      { url: "https://example.com/page-1", offset: nextOffsets.get("https://example.com/page-1") },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    // page-1 was evicted: continuing it must request a restart, without fetching.
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page-1", offset: nextOffsets.get("https://example.com/page-1") },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it("deletes only the finished URL's cache entry on the final chunk, leaving another cached page usable", async () => {
@@ -385,18 +381,14 @@ describe("web_read extension", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Page A finished on its final chunk above, so its cache entry was
-    // deleted; continuing it again must re-fetch, while page B stays cached.
-    await tool.execute(
-      "call-1",
-      { url: "https://example.com/page-a", offset: 1 },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // deleted; continuing it again must request a restart, while page B stays cached.
+    await expect(
+      tool.execute("call-1", { url: "https://example.com/page-a", offset: 1 }, new AbortController().signal, noop, {}),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back to Exa and re-fetches when the cached file is deleted from disk", async () => {
+  it("requests a restart without fetching when the cached file is deleted from disk", async () => {
     const before = await listCacheDirNames();
     const tool = getRegisteredTool("web_read");
     const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
@@ -423,17 +415,20 @@ describe("web_read extension", () => {
     expect(files.length).toBe(1);
     await rm(join(cacheDirPath, files[0]), { force: true });
 
-    await tool.execute(
-      "call-1",
-      { url: "https://example.com/page", offset: details.nextOffset },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: details.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await readdir(cacheDirPath)).filter((name) => name.endsWith(".json"))).toHaveLength(0);
   });
 
-  it("falls back to Exa and re-fetches when the cached file is corrupted", async () => {
+  it("requests a restart without fetching when the cached file is corrupted", async () => {
     const before = await listCacheDirNames();
     const tool = getRegisteredTool("web_read");
     const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
@@ -460,14 +455,17 @@ describe("web_read extension", () => {
     expect(files.length).toBe(1);
     await writeFile(join(cacheDirPath, files[0]), "not valid json{");
 
-    await tool.execute(
-      "call-1",
-      { url: "https://example.com/page", offset: details.nextOffset },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: details.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(stat(join(cacheDirPath, files[0]))).rejects.toThrow();
   });
 
   it("lazily creates a private per-process cache directory and files with the expected shape", async () => {
@@ -541,23 +539,32 @@ describe("web_read extension", () => {
 
     await expect(stat(cacheDirPath)).rejects.toThrow();
 
-    // Continuing after shutdown finds no disk entry, re-fetches, and lazily
-    // creates a fresh cache directory.
+    // Continuing after shutdown cannot create a new cache or fetch; a fresh
+    // offset-0 read recreates the cache directory.
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: details.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await listCacheDirNames()).filter((name) => !before.includes(name))).toHaveLength(0);
+
     await tool.execute(
       "call-1",
-      { url: "https://example.com/page", offset: details.nextOffset },
+      { url: "https://example.com/page", offset: 0 },
       new AbortController().signal,
       noop,
       {},
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    const afterSecondFetch = await listCacheDirNames();
-    const newDirs = afterSecondFetch.filter((name) => name !== createdDirs[0]);
-    expect(newDirs.length).toBeGreaterThan(0);
+    expect((await listCacheDirNames()).filter((name) => !before.includes(name))).toHaveLength(1);
   });
 
-  it("returns a valid chunk when cache initialization fails, then re-fetches and successfully caches once the environment is restored, leaving no .tmp files", async () => {
+  it("returns a valid chunk when cache initialization fails, then requires an offset-0 restart to cache after recovery", async () => {
     const originalTmpdir = process.env.TMPDIR;
     const invalidTmpdir = join(
       tmpdir(),
@@ -595,11 +602,22 @@ describe("web_read extension", () => {
         process.env.TMPDIR = originalTmpdir;
       }
 
-      // No cache entry exists (write failed), so this must re-fetch rather
-      // than reuse a permanently rejected cache-dir promise.
+      // The failed write left no cache entry; continuation cannot re-fetch.
+      await expect(
+        tool.execute(
+          "call-1",
+          { url: "https://example.com/page", offset: details.nextOffset },
+          new AbortController().signal,
+          noop,
+          {},
+        ),
+      ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // A fresh offset-0 read can now cache the result after recovery.
       const second = await tool.execute(
         "call-1",
-        { url: "https://example.com/page", offset: details.nextOffset },
+        { url: "https://example.com/page", offset: 0 },
         new AbortController().signal,
         noop,
         {},
@@ -608,8 +626,7 @@ describe("web_read extension", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(detailsSecond.truncated).toBe(true);
 
-      // The environment is restored, so this fetch's result should now be
-      // cached successfully; the next continuation must hit the cache.
+      // The next continuation must hit the cache.
       await tool.execute(
         "call-1",
         { url: "https://example.com/page", offset: detailsSecond.nextOffset },
@@ -633,7 +650,7 @@ describe("web_read extension", () => {
     }
   });
 
-  it("treats a cached file with valid JSON but invalid metadata (non-http/oversized URL, newline/oversized title) as a cache miss and returns freshly normalized metadata", async () => {
+  it("rejects a cached file with valid JSON but invalid metadata without fetching", async () => {
     const before = await listCacheDirNames();
     const tool = getRegisteredTool("web_read");
     const longText = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
@@ -671,17 +688,16 @@ describe("web_read extension", () => {
     });
     await writeFile(filePath, invalidPayload);
 
-    const second = await tool.execute(
-      "call-1",
-      { url: "https://example.com/page", offset: details.nextOffset },
-      new AbortController().signal,
-      noop,
-      {},
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const detailsSecond = second.details as WebReadToolDetails;
-    expect(detailsSecond.title).toBe("Example");
-    expect(second.content[0].text).not.toContain("stale cached text");
+    await expect(
+      tool.execute(
+        "call-1",
+        { url: "https://example.com/page", offset: details.nextOffset },
+        new AbortController().signal,
+        noop,
+        {},
+      ),
+    ).rejects.toThrow("web_read: continuation expired; restart with offset 0");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // The corrupt cache file was removed rather than left behind.
     await expect(stat(filePath)).rejects.toThrow();
