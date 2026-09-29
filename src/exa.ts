@@ -1,4 +1,5 @@
 import { resolveExaApiKey } from "./credentials";
+import { ProviderError, type ProviderRoute, type SearchHit } from "./provider-routing";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
@@ -148,6 +149,78 @@ export async function fetchExaContent(
 ): Promise<ExaContentResult> {
   const body = await callExaApi("web_read", EXA_CONTENTS_URL, { urls: [normalizedUrl], text: true }, signal);
   return parseFirstResult(body);
+}
+
+function routeError(error: unknown, prefix: string, signal?: AbortSignal): never {
+  if (signal?.aborted) {
+    throw new DOMException("Request aborted", "AbortError");
+  }
+  const message = error instanceof Error ? error.message : undefined;
+  if (
+    message === `${prefix}: invalid API key` ||
+    message === `${prefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`
+  ) {
+    throw new ProviderError("invalid-credentials");
+  }
+  if (message === `${prefix}: quota exceeded or payment required`) {
+    throw new ProviderError("quota");
+  }
+  if (message === `${prefix}: rate limited`) {
+    throw new ProviderError("rate-limit");
+  }
+  throw new ProviderError("transient");
+}
+
+/** Exposes the existing authenticated Exa transport only when a key is available. */
+export async function createExaKeyedRoute(): Promise<ProviderRoute | undefined> {
+  if (!isNonEmptyString(await resolveExaApiKey())) {
+    return undefined;
+  }
+  return {
+    async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
+      try {
+        const body = await callExaApi(
+          "web_search",
+          EXA_SEARCH_URL,
+          { query, numResults: 5, contents: { text: { maxCharacters: 500 } } },
+          signal,
+        );
+        if (!isRecord(body) || !Array.isArray(body.results)) {
+          throw new ProviderError("transient");
+        }
+        const hits = body.results.slice(0, 5).flatMap((entry): SearchHit[] => {
+          if (!isRecord(entry) || !isNonEmptyString(entry.url)) return [];
+          const url = entry.url.trim();
+          if (url.length > SEARCH_URL_MAX_CHARS || !isHttpUrl(url)) return [];
+          return [
+            {
+              url,
+              title: isNonEmptyString(entry.title)
+                ? truncateForDisplay(entry.title, SEARCH_TITLE_MAX_CHARS)
+                : undefined,
+              snippet: isNonEmptyString(entry.text) ? entry.text.trim().slice(0, 500) : undefined,
+            },
+          ];
+        });
+        if (body.results.length > 0 && hits.length === 0) {
+          throw new ProviderError("transient");
+        }
+        if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+        return hits;
+      } catch (error) {
+        routeError(error, "web_search", signal);
+      }
+    },
+    async read(url: string, signal?: AbortSignal) {
+      try {
+        const page = await fetchExaContent(url, signal);
+        if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+        return page;
+      } catch (error) {
+        routeError(error, "web_read", signal);
+      }
+    },
+  };
 }
 
 function parseFirstResult(body: unknown): ExaContentResult {
