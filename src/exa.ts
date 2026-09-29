@@ -1,11 +1,10 @@
 import { resolveExaApiKey } from "./credentials";
-import { ProviderError, type ProviderRoute, type SearchHit } from "./provider-routing";
+import { ProviderError, type ProviderRoute, SEARCH_URL_MAX_CHARS, type SearchHit } from "./provider-routing";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const REQUEST_TIMEOUT_MS = 30_000;
 const SEARCH_TITLE_MAX_CHARS = 200;
-const SEARCH_URL_MAX_CHARS = 2048;
 
 class ExaHttpError extends Error {
   constructor(

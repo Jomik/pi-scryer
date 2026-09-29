@@ -50,6 +50,7 @@ interface RouteState {
   retryAt: number;
 }
 
+export const SEARCH_URL_MAX_CHARS = 2048;
 const RATE_LIMIT_COOLDOWN_MS = 30_000;
 
 function abortIfRequested(signal?: AbortSignal): void {
@@ -140,7 +141,7 @@ export function createProviderRouter(providers: WebProvider[]) {
             !hits.some((hit) => {
               if (typeof hit?.url !== "string") return false;
               const trimmedUrl = hit.url.trim();
-              if (trimmedUrl.length > 2048) return false;
+              if (trimmedUrl.length > SEARCH_URL_MAX_CHARS) return false;
               try {
                 const url = new URL(trimmedUrl);
                 return url.protocol === "http:" || url.protocol === "https:";
@@ -167,7 +168,7 @@ export function createProviderRouter(providers: WebProvider[]) {
             !page.text.trim() ||
             typeof page.url !== "string" ||
             !page.url.trim() ||
-            page.url.trim().length > 2048 ||
+            page.url.trim().length > SEARCH_URL_MAX_CHARS ||
             (page.title !== undefined && typeof page.title !== "string")
           ) {
             throw new ProviderError("transient");

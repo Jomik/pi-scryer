@@ -104,10 +104,11 @@ describe("routed web_search", () => {
       ),
       "example",
     );
-    expect(long.details.truncated).toBe(false);
+    const details = long.details as Record<string, unknown>;
+    expect(details.truncated).toBe(false);
     expect(resultText(long)).toContain("Provider: Exa (keyed)");
     const rendered = tool.renderResult?.(
-      { ...long, details: { ...long.details, truncated: true } },
+      { ...long, details: { ...details, truncated: true } },
       { expanded: false, isPartial: false },
       theme,
       context,
