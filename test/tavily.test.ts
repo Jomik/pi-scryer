@@ -6,12 +6,12 @@ const originalKey = process.env.TAVILY_API_KEY;
 const secret = "private-tavily-token";
 const pageUrl = "https://example.com/page";
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+function json(body: unknown, status = 200, headers?: HeadersInit): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
-function mockFetch(body: unknown, status = 200) {
-  const fetchMock = vi.fn<typeof fetch>(async () => json(body, status));
+function mockFetch(body: unknown, status = 200, headers?: HeadersInit) {
+  const fetchMock = vi.fn<typeof fetch>(async () => json(body, status, headers));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -99,6 +99,41 @@ describe("Tavily provider", () => {
     );
   });
 
+  it("uses Retry-After on keyed HTTP 429 without reading body hints or leaking credentials", async () => {
+    process.env.TAVILY_API_KEY = secret;
+    mockFetch({ error: { message: secret } }, 429, { "Retry-After": "7" });
+    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError("rate-limit", 7000));
+  });
+
+  it("ignores keyed body retry hints", async () => {
+    process.env.TAVILY_API_KEY = secret;
+    mockFetch({ error: { retry_after_seconds: 12, message: secret } }, 429);
+    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
+  });
+
+  it("prefers Retry-After over the keyless limit body delay", async () => {
+    mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400, {
+      "Retry-After": "7",
+    });
+    await expect(createTavilyProvider().anonymous?.read(pageUrl)).rejects.toEqual(
+      new ProviderError("rate-limit", 7000),
+    );
+  });
+
+  it("uses the keyless body delay when Retry-After is invalid", async () => {
+    mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400, {
+      "Retry-After": "1.5",
+    });
+    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(
+      new ProviderError("rate-limit", 12000),
+    );
+  });
+
+  it("leaves the delay unset for HTTP 429 without a valid hint so the router uses its default", async () => {
+    mockFetch({ error: { retry_after_seconds: -1, message: secret } }, 429, { "Retry-After": "invalid" });
+    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
+  });
+
   it.each(["RATE_LIMITED", "REQUEST_THROTTLED"])("classifies keyless %s as rate-limited", async (code) => {
     mockFetch({ error: { code, retry_after_seconds: 12, message: secret } }, 400);
     await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(
@@ -107,7 +142,7 @@ describe("Tavily provider", () => {
   });
 
   it.each(["INVALID_URL", "SERVER_ERROR"])("classifies unrelated keyless %s as transient", async (code) => {
-    mockFetch({ error: { code, retry_after_seconds: 12, message: secret } }, 400);
+    mockFetch({ error: { code, retry_after_seconds: 12, message: secret } }, 400, { "Retry-After": "7" });
     await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("transient"));
   });
 

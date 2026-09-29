@@ -1,4 +1,4 @@
-import { ProviderError, type ReadPage, type SearchHit, type WebProvider } from "./provider-routing";
+import { ProviderError, type ReadPage, retryAfterMs, type SearchHit, type WebProvider } from "./provider-routing";
 
 const ORIGIN = "https://api.tavily.com";
 const TIMEOUT_MS = 30_000;
@@ -68,9 +68,10 @@ async function request(
     if (response.status === 402 || (code && /quota|credit|payment/.test(code))) throw new ProviderError("quota");
     if (response.status === 429 || (code && /(^|[_-])(limit|rate|throttl)/.test(code))) {
       const seconds = error?.retry_after_seconds;
-      const retryAfterMs =
+      const headerDelay = retryAfterMs(response.headers.get("retry-after"));
+      const bodyDelay =
         typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
-      throw new ProviderError("rate-limit", retryAfterMs);
+      throw new ProviderError("rate-limit", headerDelay !== undefined && headerDelay > 0 ? headerDelay : bodyDelay);
     }
     if (key && [401, 403, 432, 433].includes(response.status)) throw new ProviderError("invalid-credentials");
     throw new ProviderError("transient");
