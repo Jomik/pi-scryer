@@ -96,9 +96,10 @@ source and extracted text; the title is included only when available.
 - Fixed 30s timeout.
 - Output limited to 50KB or 2000 lines per call, whichever is hit first.
 - **GitHub code URLs:** repo root, `/tree/<ref>[/path]`, `/blob/<ref>/path`,
-  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com`, plus
-  `raw.githubusercontent.com/OWNER/REPO/<ref>/path`, are read directly by
-  shallow-cloning the repository over HTTPS via the `gh` CLI (`gh repo clone
+  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com` (also
+  `www.github.com`) and `raw.githubusercontent.com/OWNER/REPO/<ref>/path`
+  are read directly by shallow-cloning the repository over HTTPS via the `gh`
+  CLI (`gh repo clone
   https://github.com/owner/repo.git`) instead of going through a hosted
   provider — content is never sent to Exa or Tavily for these URLs.
   `github.com/OWNER/REPO/raw/<ref>/path`
@@ -189,8 +190,8 @@ source and extracted text; the title is included only when available.
 results as Markdown. Every valid result has a source URL; a title and a short
 excerpt (up to 500 characters) are included when the provider supplies them.
 Titles are collapsed to one line and truncated to at most 200 characters.
-Malformed search entries may be omitted, and the output reports the omitted
-count.
+Providers may silently discard malformed URLs before formatting. The reported
+`omitted` count covers only entries rejected during final formatting.
 
 - Fixed result count (5) and excerpt length; no pagination or batching.
 - Each hosted request has a 30s timeout; route fallback follows the rules above.
