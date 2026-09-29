@@ -207,6 +207,64 @@ describe("provider routing", () => {
     expect(valid).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back from an oversized read URL without changing the valid route's page", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const oversized = vi.fn<ProviderRoute["read"]>(async () => ({
+      ...page,
+      url: `https://example.com/${"a".repeat(2049)}`,
+    }));
+    const validPage = { ...page, url: `  ${page.url}  `, text: "  Content  " };
+    const valid = vi.fn<ProviderRoute["read"]>(async () => validPage);
+    const router = createProviderRouter([
+      { name: "exa", keyed: route(undefined, oversized) },
+      { name: "tavily", keyed: route(undefined, valid) },
+    ]);
+    await expect(router.read(page.url)).resolves.toEqual({ value: validPage, provider: "tavily", mode: "keyed" });
+    expect(oversized).toHaveBeenCalledTimes(1);
+    expect(valid).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["empty text", { ...page, text: "  " }],
+    ["malformed URL", { ...page, url: "file:///secret" }],
+    ["non-string title", { ...page, title: 42 }],
+  ])("falls back from a read with %s", async (_label, invalid) => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const first = vi.fn<ProviderRoute["read"]>(async () => invalid as ReadPage);
+    const second = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([
+      { name: "exa", keyed: route(undefined, first), anonymous: route(undefined, second) },
+    ]);
+    await expect(router.read(page.url)).resolves.toEqual({ value: page, provider: "exa", mode: "anonymous" });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports transient read failures without exposing invalid page data", async () => {
+    const secret = "file:///secret-page";
+    const router = createProviderRouter([
+      { name: "exa", anonymous: route(undefined, async () => ({ url: secret, text: "secret-content" })) },
+    ]);
+    await expect(router.read(page.url)).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");
+    await expect(router.read(page.url)).rejects.not.toThrow(/secret-page|secret-content/);
+  });
+
+  it("does not fall back on cancellation of a read", async () => {
+    const controller = new AbortController();
+    const first = vi.fn<ProviderRoute["read"]>(async () => {
+      controller.abort();
+      return { ...page, text: " " };
+    });
+    const second = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([
+      { name: "exa", keyed: route(undefined, first), anonymous: route(undefined, second) },
+    ]);
+    await expect(router.read(page.url, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(second).not.toHaveBeenCalled();
+    await expect(router.read(page.url)).resolves.toMatchObject({ mode: "anonymous" });
+    expect(first).toHaveBeenCalledTimes(2);
+  });
+
   it("reports a transient failure without exposing malformed search hits when no fallback exists", async () => {
     const router = createProviderRouter([{ name: "exa", anonymous: route(async () => [{ url: "file:///secret" }]) }]);
     await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");

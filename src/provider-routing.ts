@@ -159,7 +159,29 @@ export function createProviderRouter(providers: WebProvider[]) {
     },
     read(url: string, signal?: AbortSignal): Promise<RoutedResult<ReadPage>> {
       return run(
-        (route) => route.read(url, signal),
+        async (route) => {
+          const page = await route.read(url, signal);
+          if (
+            !page ||
+            typeof page.text !== "string" ||
+            !page.text.trim() ||
+            typeof page.url !== "string" ||
+            !page.url.trim() ||
+            page.url.trim().length > 2048 ||
+            (page.title !== undefined && typeof page.title !== "string")
+          ) {
+            throw new ProviderError("transient");
+          }
+          try {
+            const resolved = new URL(page.url.trim());
+            if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+              throw new ProviderError("transient");
+            }
+          } catch {
+            throw new ProviderError("transient");
+          }
+          return page;
+        },
         signal,
         () => false,
       );
