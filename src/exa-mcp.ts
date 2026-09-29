@@ -68,6 +68,8 @@ async function callTool(name: string, args: unknown, signal?: AbortSignal): Prom
   let response: Response;
   let text: string;
   try {
+    // Hosted Exa MCP currently accepts stateless tools/call (as pi-web-access does).
+    // If it starts requiring MCP sessions, an initialize handshake will be necessary.
     response = await fetch(ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json,text/event-stream" },
@@ -118,13 +120,13 @@ function searchHits(texts: string[]): SearchHit[] {
       if (hits.length === 5) return hits;
     }
   }
-  if (texts.some((text) => text.trim()) && !hits.length) throw new ProviderError("transient");
+  if (!hits.length) throw new ProviderError("transient");
   return hits;
 }
 
 function readPage(texts: string[]): ReadPage {
   for (const text of texts) {
-    const match = /^#\s+([^\n]*)\r?\nURL:\s*([^\r\n]+)\r?\n(?:[^\n]*\r?\n)*?\r?\n([\s\S]*)$/i.exec(text);
+    const match = /^#\s+([^\r\n]*)\r?\nURL:\s*([^\r\n]+)\r?\n(?:[^\n]*\r?\n)*?\r?\n([\s\S]*)$/i.exec(text);
     if (!match) continue;
     const url = httpUrl(match[2]);
     const content = optionalText(match[3]);

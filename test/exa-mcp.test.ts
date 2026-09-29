@@ -94,9 +94,13 @@ describe("anonymous Exa MCP provider", () => {
     mock(json(result("No search results found. Please try a different query.")));
     await expect(route?.search("query")).resolves.toEqual([]);
     mock(json(result("")));
-    await expect(route?.search("query")).resolves.toEqual([]);
+    await expect(route?.search("query")).rejects.toEqual(new ProviderError("transient"));
+    mock(json(result(" \r\n\t ")));
+    await expect(route?.search("query")).rejects.toEqual(new ProviderError("transient"));
     mock(json(result("Title: broken\nURL: ftp://example.com\nText: bad")));
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("transient"));
+    mock(json(result(`# CRLF title\r\nURL: ${url}\r\n\r\ntext`)));
+    await expect(route?.read(url)).resolves.toEqual({ url, title: "CRLF title", text: "text" });
     mock(json(result(`# Title\nURL: javascript:bad\n\ntext`)));
     await expect(route?.read(url)).rejects.toEqual(new ProviderError("transient"));
     mock(json(result("No content found for the provided URL(s).")));
