@@ -140,10 +140,12 @@ source and extracted text; the title is included only when available.
   `*.githubusercontent.com` subdomain (`raw.githubusercontent.com` is the one
   supported exception, handled above),
   since these can serve private repository content that must never be leaked
-  to a third-party content provider. `web_read` throws a clear
+  to a third-party content provider. On fresh reads, `web_read` throws a clear
   unsupported-GitHub-URL error for these instead of returning `undefined` and
-  falling through to either hosted provider; this applies to both fresh fetches
-  and offset-based continuation requests that miss the cache. Only URLs on
+  falling through to either hosted provider. Any continuation request
+  (`offset > 0`) that misses the cache fails with
+  `web_read: continuation expired; restart with offset 0` before GitHub
+  classification, without calling a hosted provider. Only URLs on
   genuinely unrelated sites are fetched via hosted providers.
 - Non-GitHub URLs are extracted by Exa or Tavily; there is no direct local
   fetch of arbitrary websites, authenticated pages, or private-network URLs.
