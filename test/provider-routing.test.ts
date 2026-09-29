@@ -192,6 +192,21 @@ describe("provider routing", () => {
     expect(valid).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back when the first provider has only oversized search URLs", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const oversized = vi.fn<ProviderRoute["search"]>(async () => [
+      { url: `  https://example.com/${"a".repeat(2049)}  ` },
+    ]);
+    const valid = vi.fn<ProviderRoute["search"]>(async () => [hit]);
+    const router = createProviderRouter([
+      { name: "exa", keyed: route(oversized) },
+      { name: "tavily", keyed: route(valid) },
+    ]);
+    await expect(router.search("q")).resolves.toEqual({ value: [hit], provider: "tavily", mode: "keyed" });
+    expect(oversized).toHaveBeenCalledTimes(1);
+    expect(valid).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a transient failure without exposing malformed search hits when no fallback exists", async () => {
     const router = createProviderRouter([{ name: "exa", anonymous: route(async () => [{ url: "file:///secret" }]) }]);
     await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");

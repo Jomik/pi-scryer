@@ -139,8 +139,10 @@ export function createProviderRouter(providers: WebProvider[]) {
             hits.length > 0 &&
             !hits.some((hit) => {
               if (typeof hit?.url !== "string") return false;
+              const trimmedUrl = hit.url.trim();
+              if (trimmedUrl.length > 2048) return false;
               try {
-                const url = new URL(hit.url.trim());
+                const url = new URL(trimmedUrl);
                 return url.protocol === "http:" || url.protocol === "https:";
               } catch {
                 return false;
