@@ -133,7 +133,24 @@ export function createProviderRouter(providers: WebProvider[]) {
   return {
     search(query: string, signal?: AbortSignal): Promise<RoutedResult<SearchHit[]>> {
       return run(
-        (route) => route.search(query, signal),
+        async (route) => {
+          const hits = await route.search(query, signal);
+          if (
+            hits.length > 0 &&
+            !hits.some((hit) => {
+              if (typeof hit?.url !== "string") return false;
+              try {
+                const url = new URL(hit.url.trim());
+                return url.protocol === "http:" || url.protocol === "https:";
+              } catch {
+                return false;
+              }
+            })
+          ) {
+            throw new ProviderError("transient");
+          }
+          return hits;
+        },
         signal,
         (hits) => hits.length === 0,
       );

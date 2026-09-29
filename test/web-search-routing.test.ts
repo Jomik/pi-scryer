@@ -75,12 +75,18 @@ describe("routed web_search", () => {
     expect(renderText(compact as RenderedText)).toBe("3 results, 2 omitted · Tavily (anonymous)");
   });
 
-  it("preserves an attributed no-results response, including all-invalid hits", async () => {
-    const tool = createWebSearchTool(router(async () => [{ url: "file:///tmp/test" }], "exa", "anonymous"));
+  it("preserves an attributed no-results response for genuinely empty hits", async () => {
+    const tool = createWebSearchTool(router(async () => [], "exa", "anonymous"));
     const result = await execute(tool, "example");
     expect(resultText(result)).toContain("No search results found.");
     expect(resultText(result)).toContain("Provider: Exa (anonymous)");
-    expect(result.details).toMatchObject({ resultCount: 0, omitted: 1, provider: "exa", mode: "anonymous" });
+    expect(result.details).toMatchObject({ resultCount: 0, omitted: 0, provider: "exa", mode: "anonymous" });
+  });
+
+  it("reports all-invalid hits as sanitized provider unavailability", async () => {
+    const tool = createWebSearchTool(router(async () => [{ url: "file:///tmp/secret" }], "exa", "anonymous"));
+    await expect(execute(tool, "example")).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");
+    await expect(execute(tool, "example")).rejects.not.toThrow("file:///tmp/secret");
   });
 
   it("keeps attribution and count in compact rendering, including truncation and empty states", async () => {
