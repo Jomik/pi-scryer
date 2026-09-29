@@ -1,5 +1,11 @@
 import { resolveExaApiKey } from "./credentials";
-import { ProviderError, type ProviderRoute, SEARCH_URL_MAX_CHARS, type SearchHit } from "./provider-routing";
+import {
+  ProviderError,
+  type ProviderRoute,
+  retryAfterMs,
+  SEARCH_URL_MAX_CHARS,
+  type SearchHit,
+} from "./provider-routing";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
@@ -14,24 +20,6 @@ class ExaHttpError extends Error {
   ) {
     super(message);
   }
-}
-
-function retryAfterMs(header: string | null): number | undefined {
-  if (header === null) return undefined;
-  const value = header.trim();
-  if (/^\d+$/.test(value)) {
-    const delay = Number(value) * 1000;
-    return Number.isFinite(delay) ? delay : undefined;
-  }
-  // Only accept HTTP-date forms, not Date.parse's permissive numeric or informal dates.
-  if (
-    !/^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]{3} [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/.test(
-      value,
-    )
-  )
-    return undefined;
-  const date = Date.parse(value);
-  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
 }
 
 export { EXA_SEARCH_URL, SEARCH_TITLE_MAX_CHARS, SEARCH_URL_MAX_CHARS };

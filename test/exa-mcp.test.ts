@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExaMcpProvider } from "../src/exa-mcp";
-import { ProviderError } from "../src/provider-routing";
+import { createProviderRouter, ProviderError } from "../src/provider-routing";
 
 const url = "https://example.com/page";
 const secret = "private-exa-token";
@@ -133,6 +133,37 @@ describe("anonymous Exa MCP provider", () => {
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("rate-limit", 3000));
     mock(new Response(`quota exceeded ${secret}`, { status: 403 }));
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("quota"));
+  });
+
+  it("accepts HTTP-date and fractional seconds Retry-After but rejects informal dates", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"));
+    const route = createExaMcpProvider().anonymous;
+    for (const [header, delay] of [
+      ["Wed, 21 Oct 2015 07:28:07 GMT", 7_000],
+      ["1.5", 1_500],
+      ["October 21, 2015 07:28:07 GMT", undefined],
+    ] as const) {
+      mock(json({ error: secret }, 429, { "retry-after": header }));
+      await expect(route?.search("query")).rejects.toEqual(new ProviderError("rate-limit", delay));
+    }
+  });
+
+  it("uses the fixed 30s cooldown for an invalid Retry-After date", async () => {
+    let now = Date.parse("Wed, 21 Oct 2015 07:28:00 GMT");
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ error: secret }, 429, { "retry-after": "October 21, 2015 07:28:07 GMT" }))
+      .mockResolvedValue(json(result(`Title: Title\nURL: ${url}\nHighlights:\nSnippet`)));
+    vi.stubGlobal("fetch", fetchMock);
+    const router = createProviderRouter([createExaMcpProvider()]);
+    await expect(router.search("query")).rejects.toThrow("exa/anonymous: rate-limit");
+    now += 29_999;
+    await expect(router.search("query")).rejects.toThrow("no eligible routes");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    now += 1;
+    await expect(router.search("query")).resolves.toMatchObject({ provider: "exa", mode: "anonymous" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("propagates caller abort and maps timeout and network errors to transient", async () => {

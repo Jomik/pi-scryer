@@ -53,6 +53,24 @@ interface RouteState {
 export const SEARCH_URL_MAX_CHARS = 2048;
 const RATE_LIMIT_COOLDOWN_MS = 30_000;
 
+/** Parses Exa Retry-After seconds or HTTP dates without Date.parse's informal date coercions. */
+export function retryAfterMs(header: string | null, allowFractionalSeconds = false): number | undefined {
+  if (header === null) return undefined;
+  const value = header.trim();
+  if ((allowFractionalSeconds ? /^\d+(?:\.\d+)?$/ : /^\d+$/).test(value)) {
+    const delay = Number(value) * 1000;
+    return Number.isFinite(delay) ? delay : undefined;
+  }
+  if (
+    !/^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]{3} [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/.test(
+      value,
+    )
+  )
+    return undefined;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
 function abortIfRequested(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason ?? new DOMException("Request aborted", "AbortError");

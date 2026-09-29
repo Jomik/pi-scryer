@@ -1,4 +1,11 @@
-import { ProviderError, type ProviderRoute, type ReadPage, type SearchHit, type WebProvider } from "./provider-routing";
+import {
+  ProviderError,
+  type ProviderRoute,
+  type ReadPage,
+  retryAfterMs,
+  type SearchHit,
+  type WebProvider,
+} from "./provider-routing";
 
 const ENDPOINT = "https://mcp.exa.ai/mcp";
 const TIMEOUT_MS = 30_000;
@@ -19,13 +26,6 @@ function httpUrl(value: unknown): string | undefined {
 
 function optionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function retryAfter(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  const delay = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) * 1000 : Date.parse(trimmed) - Date.now();
-  return Number.isFinite(delay) && delay > 0 ? delay : undefined;
 }
 
 function failure(value: unknown, retryAfterMs?: number): ProviderError {
@@ -83,7 +83,8 @@ async function callTool(name: string, args: unknown, signal?: AbortSignal): Prom
   }
   if (combined.aborted) cancelled();
 
-  const delay = retryAfter(response.headers.get("retry-after"));
+  const parsedDelay = retryAfterMs(response.headers.get("retry-after"), true);
+  const delay = parsedDelay !== undefined && parsedDelay > 0 ? parsedDelay : undefined;
   if (response.status === 402) throw new ProviderError("quota");
   if (response.status === 429) throw new ProviderError("rate-limit", delay);
 
