@@ -7,6 +7,34 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SEARCH_TITLE_MAX_CHARS = 200;
 const SEARCH_URL_MAX_CHARS = 2048;
 
+class ExaHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
+
+function retryAfterMs(header: string | null): number | undefined {
+  if (header === null) return undefined;
+  const value = header.trim();
+  if (/^\d+$/.test(value)) {
+    const delay = Number(value) * 1000;
+    return Number.isFinite(delay) ? delay : undefined;
+  }
+  // Only accept HTTP-date forms, not Date.parse's permissive numeric or informal dates.
+  if (
+    !/^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]{3} [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/.test(
+      value,
+    )
+  )
+    return undefined;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
 export { EXA_SEARCH_URL, SEARCH_TITLE_MAX_CHARS, SEARCH_URL_MAX_CHARS };
 
 export function truncateForDisplay(text: string, maxChars: number): string {
@@ -115,15 +143,19 @@ export async function callExaApi(
 
   if (!response.ok) {
     if (response.status === 401) {
-      throw new Error(`${toolPrefix}: invalid API key`);
+      throw new ExaHttpError(`${toolPrefix}: invalid API key`, response.status);
     }
     if (response.status === 402) {
-      throw new Error(`${toolPrefix}: quota exceeded or payment required`);
+      throw new ExaHttpError(`${toolPrefix}: quota exceeded or payment required`, response.status);
     }
     if (response.status === 429) {
-      throw new Error(`${toolPrefix}: rate limited`);
+      throw new ExaHttpError(
+        `${toolPrefix}: rate limited`,
+        response.status,
+        retryAfterMs(response.headers.get("Retry-After")),
+      );
     }
-    throw new Error(`${toolPrefix}: request failed with status ${response.status}`);
+    throw new ExaHttpError(`${toolPrefix}: request failed with status ${response.status}`, response.status);
   }
 
   try {
@@ -155,18 +187,16 @@ function routeError(error: unknown, prefix: string, signal?: AbortSignal): never
   if (signal?.aborted) {
     throw new DOMException("Request aborted", "AbortError");
   }
-  const message = error instanceof Error ? error.message : undefined;
+  if (error instanceof ExaHttpError) {
+    if (error.status === 401) throw new ProviderError("invalid-credentials");
+    if (error.status === 402) throw new ProviderError("quota");
+    if (error.status === 429) throw new ProviderError("rate-limit", error.retryAfterMs);
+  }
   if (
-    message === `${prefix}: invalid API key` ||
-    message === `${prefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`
+    error instanceof Error &&
+    error.message === `${prefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`
   ) {
     throw new ProviderError("invalid-credentials");
-  }
-  if (message === `${prefix}: quota exceeded or payment required`) {
-    throw new ProviderError("quota");
-  }
-  if (message === `${prefix}: rate limited`) {
-    throw new ProviderError("rate-limit");
   }
   throw new ProviderError("transient");
 }

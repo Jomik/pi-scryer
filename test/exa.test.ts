@@ -92,6 +92,39 @@ describe("keyed Exa route", () => {
     await expect(route?.read(url)).rejects.toEqual(new ProviderError(kind));
   });
 
+  it("maps a missing credential after route creation without changing the legacy error", async () => {
+    resolveKey.mockResolvedValueOnce(secret).mockResolvedValue(undefined);
+    const route = await createExaKeyedRoute();
+    await expect(route?.search("query")).rejects.toEqual(new ProviderError("invalid-credentials"));
+    await expect(route?.read(url)).rejects.toEqual(new ProviderError("invalid-credentials"));
+  });
+
+  it("uses valid Retry-After seconds and HTTP dates for keyed rate limits", async () => {
+    resolveKey.mockResolvedValue(secret);
+    const route = await createExaKeyedRoute();
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"));
+    for (const [header, delay] of [
+      ["12", 12_000],
+      ["Wed, 21 Oct 2015 07:28:07 GMT", 7_000],
+      ["not a date", undefined],
+      ["-5", undefined],
+      ["9".repeat(310), undefined],
+    ] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(
+          async () =>
+            new Response(JSON.stringify({ error: secret }), {
+              status: 429,
+              headers: { "Retry-After": header },
+            }),
+        ),
+      );
+      await expect(route?.search("query")).rejects.toEqual(new ProviderError("rate-limit", delay));
+      await expect(route?.read(url)).rejects.toEqual(new ProviderError("rate-limit", delay));
+    }
+  });
+
   it("propagates caller cancellation and maps timeout, network and invalid JSON to transient", async () => {
     resolveKey.mockResolvedValue(secret);
     const route = await createExaKeyedRoute();
@@ -139,6 +172,23 @@ describe("keyed Exa route", () => {
     mock({ error: secret }, 401);
     await expect(callExaApi("web_search", "https://api.exa.ai/search", {}, undefined)).rejects.toThrow(
       "web_search: invalid API key",
+    );
+    mock({ error: secret }, 402);
+    await expect(callExaApi("web_search", "https://api.exa.ai/search", {}, undefined)).rejects.toThrow(
+      "web_search: quota exceeded or payment required",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response(JSON.stringify({ error: secret }), {
+            status: 429,
+            headers: { "Retry-After": "12" },
+          }),
+      ),
+    );
+    await expect(callExaApi("web_search", "https://api.exa.ai/search", {}, undefined)).rejects.toThrow(
+      "web_search: rate limited",
     );
     mock({ results: [{ url, text: "  Legacy text  " }] });
     await expect(fetchExaContent(url, undefined)).resolves.toEqual({ url, title: undefined, text: "Legacy text" });
