@@ -82,6 +82,9 @@ export function createProviderRouter(providers: WebProvider[]) {
   ): Promise<RoutedResult<T>> {
     abortIfRequested(signal);
     const available = groups.filter((routes) => routes.some(eligible));
+    if (available.length === 0) {
+      throw new Error("Web providers unavailable: no eligible routes");
+    }
     // The remaining providers retain their supplied order; routes within each
     // provider always run keyed before anonymous.
     const first = Math.floor(Math.random() * available.length);

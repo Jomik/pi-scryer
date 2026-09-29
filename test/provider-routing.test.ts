@@ -24,6 +24,20 @@ afterEach(() => {
 });
 
 describe("provider routing", () => {
+  it("reports no eligible routes when no providers are configured", async () => {
+    await expect(createProviderRouter([]).search("q")).rejects.toThrow("Web providers unavailable: no eligible routes");
+  });
+
+  it("reports no eligible routes after all routes are disabled by quota", async () => {
+    const search = vi.fn<ProviderRoute["search"]>(async () => {
+      throw new ProviderError("quota");
+    });
+    const router = createProviderRouter([{ name: "exa", keyed: route(search) }]);
+    await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa/keyed: quota");
+    await expect(router.search("q")).rejects.toThrow("Web providers unavailable: no eligible routes");
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [0, ["exa/keyed", "exa/anonymous", "tavily/keyed", "tavily/anonymous"]],
     [0.99, ["tavily/keyed", "tavily/anonymous", "exa/keyed", "exa/anonymous"]],
