@@ -229,9 +229,11 @@ export const webSearchTool = defineTool({
   },
 });
 
-/** A routed alternative to the legacy Exa-only tool; registration is deferred to M4b. */
 export function createWebSearchTool(
-  router: ReturnType<typeof createProviderRouter> | Promise<ReturnType<typeof createProviderRouter>>,
+  router:
+    | ReturnType<typeof createProviderRouter>
+    | Promise<ReturnType<typeof createProviderRouter>>
+    | (() => Promise<ReturnType<typeof createProviderRouter>>),
 ) {
   return defineTool({
     ...webSearchTool,
@@ -243,7 +245,8 @@ export function createWebSearchTool(
       if (!isNonEmptyString(query)) {
         throw new Error("web_search: query must not be empty");
       }
-      const { value, provider, mode } = await (await router).search(query, signal);
+      const resolvedRouter = await (typeof router === "function" ? router() : router);
+      const { value, provider, mode } = await resolvedRouter.search(query, signal);
       const { results, omitted } = normalizeSearchHits(value);
       const attribution = `Provider: ${provider === "exa" ? "Exa" : "Tavily"} (${mode})`;
       return searchResult(`${attribution}\n\n${buildSearchMarkdown(results, omitted)}`, {
