@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { CachedReadResult, ContinuationCache } from "./continuation-cache";
 import { isHttpUrl, isNonEmptyString, parseCachedExaContentResult, truncateForDisplay } from "./exa";
 import type { GitHubReader } from "./github";
+import { providerLabel } from "./provider-label";
 import type { AccessMode, createProviderRouter, ProviderName } from "./provider-routing";
 
 const CALL_PREVIEW_MAX_CHARS = 80;
@@ -127,7 +128,7 @@ export function createWebReadTool(
       const more = details.nextOffset !== undefined ? theme.fg("warning", ` (more: offset ${details.nextOffset})`) : "";
       const attribution =
         details.provider && details.mode
-          ? theme.fg("dim", ` · ${details.provider === "exa" ? "Exa" : "Tavily"} (${details.mode})`)
+          ? theme.fg("dim", ` · ${providerLabel(details.provider)} (${details.mode})`)
           : "";
       const range =
         details.offset > 0 || details.truncated
@@ -189,9 +190,7 @@ export function createWebReadTool(
       }
 
       const attribution =
-        result.provider && result.mode
-          ? `Provider: ${result.provider === "exa" ? "Exa" : "Tavily"} (${result.mode})\n`
-          : "";
+        result.provider && result.mode ? `Provider: ${providerLabel(result.provider)} (${result.mode})\n` : "";
       const header = result.title
         ? `# ${result.title}\nSource: ${result.url}\n${attribution}\n`
         : `Source: ${result.url}\n${attribution}\n`;

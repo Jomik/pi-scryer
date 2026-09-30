@@ -4,11 +4,7 @@ import { createProviderRouter, ProviderError, type ProviderRoute, type SearchHit
 import { createWebSearchTool } from "../src/web-search";
 import { createIdentityTheme, noop, type RenderedText, renderText } from "./harness";
 
-function router(
-  search: ProviderRoute["search"],
-  provider: "exa" | "tavily" = "exa",
-  mode: "keyed" | "anonymous" = "keyed",
-) {
+function router(search: ProviderRoute["search"], provider: string = "exa", mode: "keyed" | "anonymous" = "keyed") {
   return createProviderRouter([
     { name: provider, [mode]: { search, read: async () => ({ url: "https://example.com", text: "" }) } },
   ]);
@@ -27,6 +23,22 @@ function resultText(result: RoutedResult): string {
 }
 
 describe("routed web_search", () => {
+  it.each([
+    ["third-provider", "third-provider"],
+    ["third\nprovider\tname", "third provider name"],
+    [`third\n${"x".repeat(1000)}`, `third ${"x".repeat(73)}…`],
+    ["third\u001b[31m\u0000provider", "third [31m provider"],
+  ])("displays generic provider %j safely in output and compact rendering", async (provider, label) => {
+    const tool = createWebSearchTool(router(async () => [{ url: "https://example.com" }], provider, "anonymous"));
+    const result = await execute(tool, "example");
+    expect(resultText(result).split("\n")[0]).toBe(`Provider: ${label} (anonymous)`);
+    expect(result.details).toMatchObject({ provider, mode: "anonymous" });
+    const theme = createIdentityTheme() as unknown as Parameters<NonNullable<RoutedTool["renderResult"]>>[2];
+    const context = { isError: false } as Parameters<NonNullable<RoutedTool["renderResult"]>>[3];
+    const compact = tool.renderResult?.(result, { expanded: false, isPartial: false }, theme, context);
+    expect(renderText(compact as RenderedText)).toBe(`1 result · ${label} (anonymous)`);
+  });
+
   it("keeps the strict name and schema, rejects blank queries before routing, and trims valid queries", async () => {
     const search = vi.fn<ProviderRoute["search"]>(async () => []);
     const tool = createWebSearchTool(Promise.resolve(router(search)));

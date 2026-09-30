@@ -48,6 +48,48 @@ describe("web_read extension", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["third-provider", "third-provider"],
+    ["third\nprovider\tname", "third provider name"],
+    [`third\n${"x".repeat(1000)}`, `third ${"x".repeat(73)}…`],
+    ["third\u001b[31m\u0000provider", "third [31m provider"],
+  ])("retains generic attribution %j in bounded read chunks and cached continuations", async (provider, label) => {
+    const { createContinuationCache } = await import("../src/continuation-cache");
+    const { createProviderRouter } = await import("../src/provider-routing");
+    const { createWebReadTool } = await import("../src/web-read");
+    const cache = createContinuationCache();
+    const url = "https://example.com/page";
+    const read = vi.fn(async () => ({ url, text: "line\n".repeat(5000) }));
+    const router = createProviderRouter([{ name: provider, anonymous: { read, search: async () => [] } }]);
+    const githubReader = { read: vi.fn(async () => undefined), cleanup: async () => {} };
+    const getRouter = vi.fn(async () => router);
+    const tool = createWebReadTool(cache, githubReader, getRouter);
+    const context = {} as Parameters<typeof tool.execute>[4];
+    try {
+      const first = await tool.execute("call-1", { url }, undefined, noop, context);
+      const { nextOffset } = first.details as WebReadToolDetails;
+      expect(nextOffset).toBeDefined();
+      const continued = await tool.execute("call-2", { url, offset: nextOffset }, undefined, noop, context);
+      for (const result of [first, continued]) {
+        const content = result.content[0];
+        const text = content?.type === "text" ? content.text : "";
+        expect(text).toContain(`Provider: ${label} (anonymous)\n`);
+        expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+        expect(text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
+        expect(result.details).toMatchObject({ provider, mode: "anonymous" });
+        const theme = createIdentityTheme() as unknown as Parameters<NonNullable<typeof tool.renderResult>>[2];
+        const renderContext = { isError: false } as Parameters<NonNullable<typeof tool.renderResult>>[3];
+        const compact = tool.renderResult?.(result, { expanded: false, isPartial: false }, theme, renderContext);
+        expect(renderText(compact as RenderedText)).toContain(` · ${label} (anonymous)`);
+      }
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(getRouter).toHaveBeenCalledTimes(1);
+      expect(githubReader.read).toHaveBeenCalledTimes(1);
+    } finally {
+      await cache.cleanup();
+    }
+  });
+
   it("registers a strict schema for web_read", () => {
     const tool = getRegisteredTool("web_read");
 

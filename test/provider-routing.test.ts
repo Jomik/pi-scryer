@@ -24,6 +24,26 @@ afterEach(() => {
 });
 
 describe("provider routing", () => {
+  it("routes search and read through a third provider with a normalized name", async () => {
+    const router = createProviderRouter([{ name: "  third-provider  ", anonymous: route() }]);
+    await expect(router.search("q")).resolves.toEqual({
+      value: [hit],
+      provider: "third-provider",
+      mode: "anonymous",
+    });
+    await expect(router.read(page.url)).resolves.toEqual({
+      value: page,
+      provider: "third-provider",
+      mode: "anonymous",
+    });
+  });
+
+  it.each(["", " \n\t ", null, undefined, 42])("rejects an invalid provider name at construction: %j", (name) => {
+    expect(() => createProviderRouter([{ name: name as string, anonymous: route() }])).toThrow(
+      "Web provider name must be a nonempty string",
+    );
+  });
+
   it("reports no eligible routes when no providers are configured", async () => {
     await expect(createProviderRouter([]).search("q")).rejects.toThrow("Web providers unavailable: no eligible routes");
   });

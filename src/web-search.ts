@@ -8,7 +8,14 @@ import {
 import { Text, TruncatedText } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isHttpUrl, isNonEmptyString, isRecord, SEARCH_TITLE_MAX_CHARS, truncateForDisplay } from "./exa";
-import { type createProviderRouter, SEARCH_URL_MAX_CHARS, type SearchHit } from "./provider-routing";
+import { providerLabel } from "./provider-label";
+import {
+  type AccessMode,
+  type createProviderRouter,
+  type ProviderName,
+  SEARCH_URL_MAX_CHARS,
+  type SearchHit,
+} from "./provider-routing";
 
 const SEARCH_MAX_RESULTS = 5;
 const SEARCH_EXCERPT_MAX_CHARS = 500;
@@ -18,8 +25,8 @@ interface WebSearchToolDetails {
   resultCount: number;
   omitted: number;
   truncated: boolean;
-  provider?: "exa" | "tavily";
-  mode?: "keyed" | "anonymous";
+  provider?: ProviderName;
+  mode?: AccessMode;
 }
 
 interface ExaSearchResult {
@@ -151,7 +158,7 @@ export function createWebSearchTool(
       }
 
       if (details.provider && details.mode) {
-        summary += ` · ${details.provider === "exa" ? "Exa" : "Tavily"} (${details.mode})`;
+        summary += ` · ${providerLabel(details.provider)} (${details.mode})`;
       }
       let line = theme.fg("muted", summary);
       if (details.truncated) {
@@ -167,7 +174,7 @@ export function createWebSearchTool(
       const resolvedRouter = await (typeof router === "function" ? router() : router);
       const { value, provider, mode } = await resolvedRouter.search(query, signal);
       const { results, omitted } = normalizeSearchHits(value);
-      const attribution = `Provider: ${provider === "exa" ? "Exa" : "Tavily"} (${mode})`;
+      const attribution = `Provider: ${providerLabel(provider)} (${mode})`;
       return searchResult(`${attribution}\n\n${buildSearchMarkdown(results, omitted)}`, {
         resultCount: results.length,
         omitted,

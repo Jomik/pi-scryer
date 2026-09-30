@@ -725,6 +725,8 @@ describe("continuation cache attribution", () => {
     ["exa", "anonymous"],
     ["tavily", "keyed"],
     ["tavily", "anonymous"],
+    ["other", "keyed"],
+    ["third-provider", "anonymous"],
   ] as const)("round-trips %s/%s attribution through the private disk file", async (provider, mode) => {
     const before = await listCacheDirNames();
     const cache = createContinuationCache();
@@ -754,7 +756,10 @@ describe("continuation cache attribution", () => {
   });
 
   it.each([
-    { provider: "other", mode: "keyed" },
+    { provider: "", mode: "keyed" },
+    { provider: " \n\t ", mode: "anonymous" },
+    { provider: 42, mode: "keyed" },
+    { provider: {}, mode: "keyed" },
     { provider: "exa", mode: "other" },
     { provider: "exa" },
     { mode: "anonymous" },
@@ -778,7 +783,15 @@ describe("continuation cache attribution", () => {
   it("does not write partial or invalid attribution", async () => {
     const cache = createContinuationCache();
     try {
-      for (const metadata of [{ provider: "exa" }, { mode: "keyed" }, { provider: "exa", mode: "invalid" }]) {
+      for (const metadata of [
+        { provider: "exa" },
+        { mode: "keyed" },
+        { provider: "exa", mode: "invalid" },
+        { provider: "", mode: "keyed" },
+        { provider: " \n\t ", mode: "keyed" },
+        { provider: 42, mode: "keyed" },
+        { provider: null, mode: "keyed" },
+      ]) {
         await expect(
           cache.writeCachedResult(url, { ...page, ...metadata } as typeof page & {
             provider: ProviderName;

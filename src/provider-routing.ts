@@ -10,7 +10,7 @@ export interface ReadPage {
   text: string;
 }
 
-export type ProviderName = "exa" | "tavily";
+export type ProviderName = string;
 export type AccessMode = "keyed" | "anonymous";
 export type ProviderFailureKind = "quota" | "invalid-credentials" | "rate-limit" | "transient";
 
@@ -83,12 +83,18 @@ function eligible(route: RouteState): boolean {
 
 /** Holds route availability in memory for the lifetime of this router. */
 export function createProviderRouter(providers: WebProvider[]) {
-  const routes = providers.flatMap((provider): RouteState[] => [
-    ...(provider.anonymous
-      ? [{ provider: provider.name, mode: "anonymous" as const, route: provider.anonymous, retryAt: 0 }]
-      : []),
-    ...(provider.keyed ? [{ provider: provider.name, mode: "keyed" as const, route: provider.keyed, retryAt: 0 }] : []),
-  ]);
+  const routes = providers.flatMap((provider): RouteState[] => {
+    if (typeof provider.name !== "string" || !provider.name.trim()) {
+      throw new Error("Web provider name must be a nonempty string");
+    }
+    const name = provider.name.trim();
+    return [
+      ...(provider.anonymous
+        ? [{ provider: name, mode: "anonymous" as const, route: provider.anonymous, retryAt: 0 }]
+        : []),
+      ...(provider.keyed ? [{ provider: name, mode: "keyed" as const, route: provider.keyed, retryAt: 0 }] : []),
+    ];
+  });
 
   async function run<T>(
     operation: (route: ProviderRoute) => Promise<T>,

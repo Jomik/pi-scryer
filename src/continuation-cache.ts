@@ -15,10 +15,11 @@ function parseAttribution(
     return {};
   }
   if (
-    (value.provider === "exa" || value.provider === "tavily") &&
+    typeof value.provider === "string" &&
+    value.provider.trim().length > 0 &&
     (value.mode === "keyed" || value.mode === "anonymous")
   ) {
-    return { provider: value.provider, mode: value.mode };
+    return { provider: value.provider.trim(), mode: value.mode };
   }
   return undefined;
 }
