@@ -25,6 +25,8 @@ function resultText(result: RoutedResult): string {
 describe("routed web_search", () => {
   it.each([
     ["third-provider", "Third-provider"],
+    ["\u0000", "Provider"],
+    ["\u202e", "Provider"],
     ["third\nprovider\tname", "Third provider name"],
     [`third\n${"x".repeat(1000)}`, `Third ${"x".repeat(73)}…`],
     ["third\u001b[31m\u0000provider", "Third [31m provider"],
