@@ -58,17 +58,24 @@ also resets route availability.
 
 ## Provider routing
 
-Four routes are tracked independently: Exa keyed REST, Exa anonymous MCP,
-Tavily keyed REST, and Tavily keyless REST (anonymous). Each fresh `web_search`
-or non-GitHub `web_read` randomly starts with one eligible anonymous route,
-then tries the other eligible anonymous route if needed. Only if neither
+Four standalone providers are tracked independently:
+
+- `exa` — keyed Exa REST.
+- `exa-anon` — anonymous Exa MCP.
+- `tavily` — keyed Tavily REST.
+- `tavily-anon` — keyless Tavily REST (anonymous).
+
+Each provider is one route. Each fresh `web_search` or non-GitHub `web_read`
+randomly starts with one eligible anonymous route, then tries the other eligible
+anonymous route if needed. Only if neither
 returns a usable result does it randomly start with an eligible configured
 keyed route, then try the other eligible keyed route if needed. Routes without
 a configured key, disabled routes, and rate-limited routes still waiting for
 their retry time are omitted. Attempts are sequential, not parallel queries.
-Successful output identifies the provider and access mode; `web_read`
-continuation chunks retain the original provider and mode. Empty search
-results may prompt another route; if all routes return no matches, the result
+Successful output identifies the provider and access mode as `Exa (keyed)`,
+`Exa-anon (anonymous)`, `Tavily (keyed)`, or `Tavily-anon (anonymous)`;
+`web_read` continuation chunks retain the original provider and mode. Empty
+search results may prompt another route; if all routes return no matches, the result
 is "No search results found."
 
 Quota exhaustion or invalid credentials disable only the affected route until
@@ -199,6 +206,14 @@ Providers may silently discard malformed URLs before formatting. The reported
   to read the full page. No direct local fetch of arbitrary websites.
 
 ## Development
+
+Transport implementations live in `src/providers/{exa,exa-anon,tavily}.ts`;
+`src/providers/registry.ts` explicitly assembles the available provider entries.
+Tavily's keyed and anonymous providers share the same REST code. In
+`src/provider-routing.ts`, `WebProvider` extends `ProviderRoute` (`search` and
+`read`) with `name: string` and `mode: "anonymous" | "keyed"`. Shared content
+types and helpers live in `src/web-content.ts`. The router alone chooses the
+provider; neither tool exposes a provider argument to the agent.
 
 ```
 npm install
