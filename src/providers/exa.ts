@@ -24,8 +24,6 @@ class ExaHttpError extends Error {
   }
 }
 
-export { EXA_SEARCH_URL };
-
 /**
  * Performs an authenticated POST to an Exa API endpoint, applying the shared
  * timeout/cancellation handling and translating transport, HTTP status, and

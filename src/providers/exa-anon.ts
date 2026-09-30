@@ -1,4 +1,5 @@
-import { ProviderError, type ReadPage, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
+import { ProviderError, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
+import type { ReadPage } from "../web-content";
 
 const ENDPOINT = "https://mcp.exa.ai/mcp";
 const TIMEOUT_MS = 30_000;

@@ -1,7 +1,5 @@
 import { type ReadPage, SEARCH_URL_MAX_CHARS } from "./web-content";
 
-export { type ReadPage, SEARCH_URL_MAX_CHARS } from "./web-content";
-
 export interface SearchHit {
   title?: string;
   url: string;
@@ -82,6 +80,9 @@ export function createProviderRouter(providers: WebProvider[]) {
   const routes = providers.map((provider): RouteState => {
     if (typeof provider.name !== "string" || !provider.name.trim()) {
       throw new Error("Web provider name must be a nonempty string");
+    }
+    if (provider.mode !== "anonymous" && provider.mode !== "keyed") {
+      throw new Error('Web provider mode must be "anonymous" or "keyed"');
     }
     return { provider: provider.name.trim(), mode: provider.mode, route: provider, retryAt: 0 };
   });

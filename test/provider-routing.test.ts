@@ -3,10 +3,10 @@ import {
   createProviderRouter,
   ProviderError,
   type ProviderRoute,
-  type ReadPage,
   type SearchHit,
   type WebProvider,
 } from "../src/provider-routing";
+import type { ReadPage } from "../src/web-content";
 
 const hit: SearchHit = { title: "Title", url: "https://example.com", snippet: "Excerpt" };
 const page: ReadPage = { title: "Title", url: "https://example.com", text: "Content" };
@@ -41,6 +41,12 @@ describe("provider routing", () => {
   it.each(["", " \n\t ", null, undefined, 42])("rejects an invalid provider name at construction: %j", (name) => {
     expect(() => createProviderRouter([{ name: name as string, mode: "anonymous", ...route() }])).toThrow(
       "Web provider name must be a nonempty string",
+    );
+  });
+
+  it.each([null, undefined, "anonynous"])("rejects an invalid provider mode at construction: %j", (mode) => {
+    expect(() => createProviderRouter([{ name: "exa-anon", mode: mode as WebProvider["mode"], ...route() }])).toThrow(
+      'Web provider mode must be "anonymous" or "keyed"',
     );
   });
 
