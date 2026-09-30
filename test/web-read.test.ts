@@ -49,10 +49,13 @@ describe("web_read extension", () => {
   });
 
   it.each([
-    ["third-provider", "third-provider"],
-    ["third\nprovider\tname", "third provider name"],
-    [`third\n${"x".repeat(1000)}`, `third ${"x".repeat(73)}…`],
-    ["third\u001b[31m\u0000provider", "third [31m provider"],
+    ["third-provider", "Third-provider"],
+    ["third\nprovider\tname", "Third provider name"],
+    [`third\n${"x".repeat(1000)}`, `Third ${"x".repeat(73)}…`],
+    ["third\u001b[31m\u0000provider", "Third [31m provider"],
+    ["\u202ethird\u202c-provider", "Third -provider"],
+    ["\u2066third\u2069\u2067-provider\u2069\u2068name\u2069", "Third -provider name"],
+    ["third\u2028provider\u2029name", "Third provider name"],
   ])("retains generic attribution %j in bounded read chunks and cached continuations", async (provider, label) => {
     const { createContinuationCache } = await import("../src/continuation-cache");
     const { createProviderRouter } = await import("../src/provider-routing");

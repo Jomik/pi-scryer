@@ -3,6 +3,6 @@ import type { ProviderName } from "./provider-routing";
 
 /** Keep provider attribution bounded and free of line breaks or terminal controls. */
 export function providerLabel(name: ProviderName): string {
-  const label = name === "exa" ? "Exa" : name === "tavily" ? "Tavily" : name;
-  return truncateForDisplay(label.replace(/\p{Cc}/gu, " "), 80);
+  const label = name.replace(/[\p{Cc}\p{Cf}]/gu, " ").trim();
+  return truncateForDisplay(label.charAt(0).toUpperCase() + label.slice(1), 80);
 }
