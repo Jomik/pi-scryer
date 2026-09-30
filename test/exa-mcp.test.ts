@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createExaMcpProvider } from "../src/exa-mcp";
 import { createProviderRouter, ProviderError } from "../src/provider-routing";
+import { createExaMcpProvider } from "../src/providers/exa-anon";
 
 const url = "https://example.com/page";
 const secret = "private-exa-token";

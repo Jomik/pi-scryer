@@ -5,7 +5,7 @@ import {
   retryAfterMs,
   type SearchHit,
   type WebProvider,
-} from "./provider-routing";
+} from "../provider-routing";
 
 const ENDPOINT = "https://mcp.exa.ai/mcp";
 const TIMEOUT_MS = 30_000;

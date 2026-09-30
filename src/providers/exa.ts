@@ -1,5 +1,5 @@
-import { resolveExaApiKey } from "./credentials";
-import { ProviderError, type ProviderRoute, retryAfterMs, type SearchHit } from "./provider-routing";
+import { resolveExaApiKey } from "../credentials";
+import { ProviderError, type ProviderRoute, retryAfterMs, type SearchHit } from "../provider-routing";
 import {
   isHttpUrl,
   isNonEmptyString,
@@ -8,7 +8,7 @@ import {
   SEARCH_TITLE_MAX_CHARS,
   SEARCH_URL_MAX_CHARS,
   truncateForDisplay,
-} from "./web-content";
+} from "../web-content";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";

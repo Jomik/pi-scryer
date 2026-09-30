@@ -1,4 +1,4 @@
-import { ProviderError, type ReadPage, retryAfterMs, type SearchHit, type WebProvider } from "./provider-routing";
+import { ProviderError, type ReadPage, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
 
 const ORIGIN = "https://api.tavily.com";
 const TIMEOUT_MS = 30_000;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { callExaApi, createExaKeyedRoute, fetchExaContent } from "../src/exa";
 import { ProviderError } from "../src/provider-routing";
+import { callExaApi, createExaKeyedRoute, fetchExaContent } from "../src/providers/exa";
 
 const resolveKey = vi.hoisted(() => vi.fn<() => Promise<string | undefined>>());
 vi.mock("../src/credentials", () => ({ resolveExaApiKey: resolveKey }));

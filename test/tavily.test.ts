@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/provider-routing";
-import { createTavilyProvider } from "../src/tavily";
+import { createTavilyProvider } from "../src/providers/tavily";
 
 const originalKey = process.env.TAVILY_API_KEY;
 const secret = "private-tavily-token";

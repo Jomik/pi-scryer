@@ -1,11 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createContinuationCache } from "./continuation-cache";
 import { registerScryerCommand } from "./credentials";
-import { createExaKeyedRoute } from "./exa";
-import { createExaMcpProvider } from "./exa-mcp";
 import { createGitHubReader } from "./github";
 import { createProviderRouter } from "./provider-routing";
-import { createTavilyProvider } from "./tavily";
+import { createProviderRegistry } from "./providers/registry";
 import { createWebReadTool } from "./web-read";
 import { createWebSearchTool } from "./web-search";
 
@@ -18,15 +16,10 @@ export default function activate(api: ExtensionAPI): void {
     await githubReader.cleanup().catch(() => {});
   });
 
-  const exa = createExaMcpProvider();
-  const tavily = createTavilyProvider();
+  const loadProviders = createProviderRegistry();
   // Resolve credentials only when a hosted search or read runs.
   let routerPromise: Promise<ReturnType<typeof createProviderRouter>> | undefined;
-  const getRouter = () =>
-    (routerPromise ??= createExaKeyedRoute().then((keyed) => {
-      if (keyed) exa.keyed = keyed;
-      return createProviderRouter([exa, tavily]);
-    }));
+  const getRouter = () => (routerPromise ??= loadProviders().then(createProviderRouter));
 
   api.registerTool(createWebReadTool(cache, githubReader, getRouter));
   api.registerTool(createWebSearchTool(getRouter));
