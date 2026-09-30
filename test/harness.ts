@@ -1,8 +1,29 @@
-import { readdir } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, vi } from "vitest";
+import { afterAll, afterEach, expect, vi } from "vitest";
 import activate from "../src/index";
+
+// Each isolated Vitest file owns its temporary root, so cache scans cannot
+// observe directories created or removed by parallel workers. Assign directly
+// so vi.unstubAllEnvs() cannot undo the harness's lifetime environment setting.
+const originalTmpdirEnv = process.env.TMPDIR;
+const testTmpdir = mkdtempSync(join(tmpdir(), "scryer-test-"));
+process.env.TMPDIR = testTmpdir;
+
+afterAll(async () => {
+  try {
+    await rm(testTmpdir, { recursive: true, force: true });
+  } finally {
+    if (originalTmpdirEnv === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = originalTmpdirEnv;
+    }
+  }
+});
 
 // Hoisted mock for node:child_process.execFile. Default behavior simulates a
 // missing macOS Keychain item (as `security` reports it), so every existing
