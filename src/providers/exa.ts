@@ -1,5 +1,5 @@
 import { resolveExaApiKey } from "../credentials";
-import { ProviderError, type ProviderRoute, retryAfterMs, type SearchHit } from "../provider-routing";
+import { ProviderError, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
 import {
   isHttpUrl,
   isNonEmptyString,
@@ -125,11 +125,13 @@ function routeError(error: unknown, prefix: string, signal?: AbortSignal): never
 }
 
 /** Exposes the existing authenticated Exa transport only when a key is available. */
-export async function createExaKeyedRoute(): Promise<ProviderRoute | undefined> {
+export async function createExaProvider(): Promise<WebProvider | undefined> {
   if (!isNonEmptyString(await resolveExaApiKey())) {
     return undefined;
   }
   return {
+    name: "exa",
+    mode: "keyed",
     async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
       try {
         const body = await callExaApi(

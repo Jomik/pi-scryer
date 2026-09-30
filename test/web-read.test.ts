@@ -65,7 +65,7 @@ describe("web_read extension", () => {
     const cache = createContinuationCache();
     const url = "https://example.com/page";
     const read = vi.fn(async () => ({ url, text: "line\n".repeat(5000) }));
-    const router = createProviderRouter([{ name: provider, anonymous: { read, search: async () => [] } }]);
+    const router = createProviderRouter([{ name: provider, mode: "anonymous", read, search: async () => [] }]);
     const githubReader = { read: vi.fn(async () => undefined), cleanup: async () => {} };
     const getRouter = vi.fn(async () => router);
     const tool = createWebReadTool(cache, githubReader, getRouter);
@@ -267,8 +267,8 @@ describe("web_read extension", () => {
     vi.stubGlobal("fetch", fetchMock);
     const read = getRegisteredTool("web_read");
     const first = await read.execute("call-1", { url: "https://example.com/page" }, undefined, noop, {});
-    expect(first.content[0].text).toContain("Provider: Exa (anonymous)");
-    expect(first.details).toMatchObject({ provider: "exa", mode: "anonymous", truncated: true });
+    expect(first.content[0].text).toContain("Provider: Exa-anon (anonymous)");
+    expect(first.details).toMatchObject({ provider: "exa-anon", mode: "anonymous", truncated: true });
     const firstDetails = first.details as WebReadToolDetails;
     const continued = await read.execute(
       "call-2",
@@ -277,15 +277,15 @@ describe("web_read extension", () => {
       noop,
       {},
     );
-    expect(continued.content[0].text).toContain("Provider: Exa (anonymous)");
-    expect(continued.details).toMatchObject({ provider: "exa", mode: "anonymous" });
+    expect(continued.content[0].text).toContain("Provider: Exa-anon (anonymous)");
+    expect(continued.details).toMatchObject({ provider: "exa-anon", mode: "anonymous" });
     expect(
       renderText(
         read.renderResult?.(continued, { expanded: false, isPartial: false }, createIdentityTheme(), {
           isError: false,
         }) as RenderedText,
       ),
-    ).toContain("Exa (anonymous)");
+    ).toContain("Exa-anon (anonymous)");
     expect(calls).toEqual(["https://mcp.exa.ai/mcp"]);
 
     const second = await read.execute("call-3", { url: "https://example.com/page", offset: 0 }, undefined, noop, {});

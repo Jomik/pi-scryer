@@ -28,10 +28,9 @@ export interface ProviderRoute {
   read(url: string, signal?: AbortSignal): Promise<ReadPage>;
 }
 
-export interface WebProvider {
-  name: ProviderName;
-  keyed?: ProviderRoute;
-  anonymous?: ProviderRoute;
+export interface WebProvider extends ProviderRoute {
+  name: string;
+  mode: AccessMode;
 }
 
 export interface RoutedResult<T> {
@@ -80,17 +79,11 @@ function eligible(route: RouteState): boolean {
 
 /** Holds route availability in memory for the lifetime of this router. */
 export function createProviderRouter(providers: WebProvider[]) {
-  const routes = providers.flatMap((provider): RouteState[] => {
+  const routes = providers.map((provider): RouteState => {
     if (typeof provider.name !== "string" || !provider.name.trim()) {
       throw new Error("Web provider name must be a nonempty string");
     }
-    const name = provider.name.trim();
-    return [
-      ...(provider.anonymous
-        ? [{ provider: name, mode: "anonymous" as const, route: provider.anonymous, retryAt: 0 }]
-        : []),
-      ...(provider.keyed ? [{ provider: name, mode: "keyed" as const, route: provider.keyed, retryAt: 0 }] : []),
-    ];
+    return { provider: provider.name.trim(), mode: provider.mode, route: provider, retryAt: 0 };
   });
 
   async function run<T>(

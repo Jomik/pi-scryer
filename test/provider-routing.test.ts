@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe("provider routing", () => {
   it("routes search and read through a third provider with a normalized name", async () => {
-    const router = createProviderRouter([{ name: "  third-provider  ", anonymous: route() }]);
+    const router = createProviderRouter([{ name: "  third-provider  ", mode: "anonymous", ...route() }]);
     await expect(router.search("q")).resolves.toEqual({
       value: [hit],
       provider: "third-provider",
@@ -39,7 +39,7 @@ describe("provider routing", () => {
   });
 
   it.each(["", " \n\t ", null, undefined, 42])("rejects an invalid provider name at construction: %j", (name) => {
-    expect(() => createProviderRouter([{ name: name as string, anonymous: route() }])).toThrow(
+    expect(() => createProviderRouter([{ name: name as string, mode: "anonymous", ...route() }])).toThrow(
       "Web provider name must be a nonempty string",
     );
   });
@@ -52,15 +52,15 @@ describe("provider routing", () => {
     const search = vi.fn<ProviderRoute["search"]>(async () => {
       throw new ProviderError("quota");
     });
-    const router = createProviderRouter([{ name: "exa", keyed: route(search) }]);
+    const router = createProviderRouter([{ name: "exa", mode: "keyed", ...route(search) }]);
     await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa/keyed: quota");
     await expect(router.search("q")).rejects.toThrow("Web providers unavailable: no eligible routes");
     expect(search).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    [0, 0, ["exa/anonymous", "tavily/anonymous", "exa/keyed", "tavily/keyed"]],
-    [0.99, 0.99, ["tavily/anonymous", "exa/anonymous", "tavily/keyed", "exa/keyed"]],
+    [0, 0, ["exa-anon/anonymous", "tavily-anon/anonymous", "exa/keyed", "tavily/keyed"]],
+    [0.99, 0.99, ["tavily-anon/anonymous", "exa-anon/anonymous", "tavily/keyed", "exa/keyed"]],
   ])("randomizes each tier independently and attempts sequentially (%s, %s)", async (anonDraw, keyedDraw, expected) => {
     vi.spyOn(Math, "random").mockReturnValueOnce(anonDraw).mockReturnValueOnce(keyedDraw);
     const calls: string[] = [];
@@ -75,8 +75,10 @@ describe("provider routing", () => {
         throw new ProviderError("transient");
       });
     const providers: WebProvider[] = [
-      { name: "exa", keyed: failed("exa/keyed"), anonymous: failed("exa/anonymous") },
-      { name: "tavily", keyed: failed("tavily/keyed"), anonymous: failed("tavily/anonymous") },
+      { name: "exa", mode: "keyed", ...failed("exa/keyed") },
+      { name: "exa-anon", mode: "anonymous", ...failed("exa-anon/anonymous") },
+      { name: "tavily", mode: "keyed", ...failed("tavily/keyed") },
+      { name: "tavily-anon", mode: "anonymous", ...failed("tavily-anon/anonymous") },
     ];
     const result = createProviderRouter(providers).search("q");
     expect(calls).toEqual([expected[0]]);
@@ -94,11 +96,11 @@ describe("provider routing", () => {
         throw new ProviderError("transient");
       });
     const router = createProviderRouter([
-      { name: "exa", anonymous: failed("exa/anonymous") },
-      { name: "tavily", anonymous: failed("tavily/anonymous") },
+      { name: "exa-anon", mode: "anonymous", ...failed("exa-anon/anonymous") },
+      { name: "tavily-anon", mode: "anonymous", ...failed("tavily-anon/anonymous") },
     ]);
     await expect(router.search("q")).rejects.toThrow("Web providers unavailable");
-    expect(calls).toEqual(["tavily/anonymous", "exa/anonymous"]);
+    expect(calls).toEqual(["tavily-anon/anonymous", "exa-anon/anonymous"]);
   });
 
   it("does not start fallback until a pending route fails, and passes the caller signal", async () => {
@@ -112,7 +114,8 @@ describe("provider routing", () => {
     );
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
+      { name: "exa-anon", mode: "anonymous", ...route(undefined, first) },
+      { name: "exa", mode: "keyed", ...route(undefined, second) },
     ]);
     const signal = new AbortController().signal;
     const pending = router.read(page.url, signal);
@@ -133,8 +136,9 @@ describe("provider routing", () => {
     });
     const other = vi.fn<ProviderRoute["search"]>(async () => [hit]);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(keyed), anonymous: route(anonymous) },
-      { name: "tavily", keyed: route(other) },
+      { name: "exa", mode: "keyed", ...route(keyed) },
+      { name: "exa-anon", mode: "anonymous", ...route(anonymous) },
+      { name: "tavily", mode: "keyed", ...route(other) },
     ]);
     await expect(router.search("q")).resolves.toMatchObject({ provider: "tavily", mode: "keyed" });
     await expect(router.search("q")).resolves.toMatchObject({ provider: "tavily", mode: "keyed" });
@@ -153,15 +157,15 @@ describe("provider routing", () => {
     const limitedRead = vi.fn<ProviderRoute["read"]>(async () => page);
     const otherRead = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", anonymous: route(limitedSearch, limitedRead) },
-      { name: "tavily", anonymous: route(async () => [hit], otherRead) },
+      { name: "exa-anon", mode: "anonymous", ...route(limitedSearch, limitedRead) },
+      { name: "tavily-anon", mode: "anonymous", ...route(async () => [hit], otherRead) },
     ]);
-    await expect(router.search("q")).resolves.toMatchObject({ provider: "tavily" });
-    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "tavily" });
+    await expect(router.search("q")).resolves.toMatchObject({ provider: "tavily-anon" });
+    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "tavily-anon" });
     expect(limitedRead).not.toHaveBeenCalled();
     expect(otherRead).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(5_000);
-    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "exa" });
+    await expect(router.read(page.url)).resolves.toMatchObject({ provider: "exa-anon" });
     expect(limitedRead).toHaveBeenCalledTimes(1);
     expect(limitedSearch).toHaveBeenCalledTimes(1);
   });
@@ -175,7 +179,10 @@ describe("provider routing", () => {
       .mockRejectedValueOnce(new ProviderError("rate-limit", 5_000))
       .mockResolvedValue([hit]);
     const anonymous = vi.fn<ProviderRoute["search"]>(async () => []);
-    const router = createProviderRouter([{ name: "exa", keyed: route(keyed), anonymous: route(anonymous) }]);
+    const router = createProviderRouter([
+      { name: "exa", mode: "keyed", ...route(keyed) },
+      { name: "exa-anon", mode: "anonymous", ...route(anonymous) },
+    ]);
     await expect(router.search("q")).resolves.toMatchObject({ mode: "anonymous", value: [] });
     await router.search("q");
     expect(keyed).toHaveBeenCalledTimes(1);
@@ -196,8 +203,8 @@ describe("provider routing", () => {
       .mockRejectedValueOnce(new ProviderError("transient"))
       .mockResolvedValue(page);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(undefined, limited) },
-      { name: "tavily", keyed: route(undefined, transient) },
+      { name: "exa", mode: "keyed", ...route(undefined, limited) },
+      { name: "tavily", mode: "keyed", ...route(undefined, transient) },
     ]);
     vi.spyOn(Math, "random").mockReturnValue(0);
     await expect(router.read(page.url)).rejects.toThrow("rate-limit");
@@ -212,17 +219,21 @@ describe("provider routing", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     const empty = vi.fn<ProviderRoute["search"]>(async () => []);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(empty) },
+      { name: "exa", mode: "keyed", ...route(empty) },
       {
-        name: "tavily",
-        anonymous: route(async () => {
+        name: "tavily-anon",
+        mode: "anonymous",
+        ...route(async () => {
           throw new ProviderError("transient");
         }),
       },
     ]);
     await expect(router.search("q")).resolves.toEqual({ value: [], provider: "exa", mode: "keyed" });
-    const useful = createProviderRouter([{ name: "exa", keyed: route(empty), anonymous: route(async () => [hit]) }]);
-    await expect(useful.search("q")).resolves.toEqual({ value: [hit], provider: "exa", mode: "anonymous" });
+    const useful = createProviderRouter([
+      { name: "exa", mode: "keyed", ...route(empty) },
+      { name: "exa-anon", mode: "anonymous", ...route(async () => [hit]) },
+    ]);
+    await expect(useful.search("q")).resolves.toEqual({ value: [hit], provider: "exa-anon", mode: "anonymous" });
   });
 
   it("falls back to another provider when all search hits have malformed URLs", async () => {
@@ -235,8 +246,8 @@ describe("provider routing", () => {
     ]);
     const valid = vi.fn<ProviderRoute["search"]>(async () => [hit]);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(malformed) },
-      { name: "tavily", keyed: route(valid) },
+      { name: "exa", mode: "keyed", ...route(malformed) },
+      { name: "tavily", mode: "keyed", ...route(valid) },
     ]);
     await expect(router.search("q")).resolves.toEqual({ value: [hit], provider: "tavily", mode: "keyed" });
     expect(malformed).toHaveBeenCalledTimes(1);
@@ -250,8 +261,8 @@ describe("provider routing", () => {
     ]);
     const valid = vi.fn<ProviderRoute["search"]>(async () => [hit]);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(oversized) },
-      { name: "tavily", keyed: route(valid) },
+      { name: "exa", mode: "keyed", ...route(oversized) },
+      { name: "tavily", mode: "keyed", ...route(valid) },
     ]);
     await expect(router.search("q")).resolves.toEqual({ value: [hit], provider: "tavily", mode: "keyed" });
     expect(oversized).toHaveBeenCalledTimes(1);
@@ -267,8 +278,8 @@ describe("provider routing", () => {
     const validPage = { ...page, url: `  ${page.url}  `, text: "  Content  " };
     const valid = vi.fn<ProviderRoute["read"]>(async () => validPage);
     const router = createProviderRouter([
-      { name: "exa", keyed: route(undefined, oversized) },
-      { name: "tavily", keyed: route(undefined, valid) },
+      { name: "exa", mode: "keyed", ...route(undefined, oversized) },
+      { name: "tavily", mode: "keyed", ...route(undefined, valid) },
     ]);
     await expect(router.read(page.url)).resolves.toEqual({ value: validPage, provider: "tavily", mode: "keyed" });
     expect(oversized).toHaveBeenCalledTimes(1);
@@ -284,7 +295,8 @@ describe("provider routing", () => {
     const first = vi.fn<ProviderRoute["read"]>(async () => invalid as ReadPage);
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
+      { name: "exa-anon", mode: "anonymous", ...route(undefined, first) },
+      { name: "exa", mode: "keyed", ...route(undefined, second) },
     ]);
     await expect(router.read(page.url)).resolves.toEqual({ value: page, provider: "exa", mode: "keyed" });
     expect(first).toHaveBeenCalledTimes(1);
@@ -294,9 +306,13 @@ describe("provider routing", () => {
   it("reports transient read failures without exposing invalid page data", async () => {
     const secret = "file:///secret-page";
     const router = createProviderRouter([
-      { name: "exa", anonymous: route(undefined, async () => ({ url: secret, text: "secret-content" })) },
+      {
+        name: "exa-anon",
+        mode: "anonymous",
+        ...route(undefined, async () => ({ url: secret, text: "secret-content" })),
+      },
     ]);
-    await expect(router.read(page.url)).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");
+    await expect(router.read(page.url)).rejects.toThrow("Web providers unavailable: exa-anon/anonymous: transient");
     await expect(router.read(page.url)).rejects.not.toThrow(/secret-page|secret-content/);
   });
 
@@ -308,7 +324,8 @@ describe("provider routing", () => {
     });
     const second = vi.fn<ProviderRoute["read"]>(async () => page);
     const router = createProviderRouter([
-      { name: "exa", anonymous: route(undefined, first), keyed: route(undefined, second) },
+      { name: "exa-anon", mode: "anonymous", ...route(undefined, first) },
+      { name: "exa", mode: "keyed", ...route(undefined, second) },
     ]);
     await expect(router.read(page.url, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(second).not.toHaveBeenCalled();
@@ -317,8 +334,10 @@ describe("provider routing", () => {
   });
 
   it("reports a transient failure without exposing malformed search hits when no fallback exists", async () => {
-    const router = createProviderRouter([{ name: "exa", anonymous: route(async () => [{ url: "file:///secret" }]) }]);
-    await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa/anonymous: transient");
+    const router = createProviderRouter([
+      { name: "exa-anon", mode: "anonymous", ...route(async () => [{ url: "file:///secret" }]) },
+    ]);
+    await expect(router.search("q")).rejects.toThrow("Web providers unavailable: exa-anon/anonymous: transient");
     await expect(router.search("q")).rejects.not.toThrow("file:///secret");
   });
 
@@ -329,7 +348,10 @@ describe("provider routing", () => {
       throw new ProviderError("quota");
     });
     const anonymous = vi.fn<ProviderRoute["search"]>(async () => [hit]);
-    const router = createProviderRouter([{ name: "exa", anonymous: route(keyed), keyed: route(anonymous) }]);
+    const router = createProviderRouter([
+      { name: "exa-anon", mode: "anonymous", ...route(keyed) },
+      { name: "exa", mode: "keyed", ...route(anonymous) },
+    ]);
     const alreadyAborted = new AbortController();
     alreadyAborted.abort();
     await expect(router.search("q", alreadyAborted.signal)).rejects.toMatchObject({ name: "AbortError" });
@@ -345,18 +367,20 @@ describe("provider routing", () => {
     const router = createProviderRouter([
       {
         name: "exa",
-        keyed: route(async () => {
+        mode: "keyed",
+        ...route(async () => {
           throw new Error(secret);
         }),
       },
       {
-        name: "tavily",
-        anonymous: route(async () => {
+        name: "tavily-anon",
+        mode: "anonymous",
+        ...route(async () => {
           throw new ProviderError("quota");
         }),
       },
     ]);
-    await expect(router.search("q")).rejects.toThrow("tavily/anonymous: quota; exa/keyed: unexpected failure");
+    await expect(router.search("q")).rejects.toThrow("tavily-anon/anonymous: quota; exa/keyed: unexpected failure");
     await expect(router.search("q")).rejects.not.toThrow(secret);
     await expect(router.search("q")).rejects.toThrow("exa/keyed: unexpected failure");
   });

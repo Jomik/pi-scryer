@@ -6,7 +6,7 @@ import { createIdentityTheme, noop, type RenderedText, renderText } from "./harn
 
 function router(search: ProviderRoute["search"], provider: string = "exa", mode: "keyed" | "anonymous" = "keyed") {
   return createProviderRouter([
-    { name: provider, [mode]: { search, read: async () => ({ url: "https://example.com", text: "" }) } },
+    { name: provider, mode, search, read: async () => ({ url: "https://example.com", text: "" }) },
   ]);
 }
 

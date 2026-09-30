@@ -102,7 +102,10 @@ function makeRoute(key?: string) {
   };
 }
 
-export function createTavilyProvider(): WebProvider {
+export function createTavilyProviders(): WebProvider[] {
   const key = process.env.TAVILY_API_KEY?.trim();
-  return { name: "tavily", ...(key ? { keyed: makeRoute(key) } : {}), anonymous: makeRoute() };
+  return [
+    ...(key ? [{ name: "tavily", mode: "keyed" as const, ...makeRoute(key) }] : []),
+    { name: "tavily-anon", mode: "anonymous", ...makeRoute() },
+  ];
 }

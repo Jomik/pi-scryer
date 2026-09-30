@@ -1,11 +1,4 @@
-import {
-  ProviderError,
-  type ProviderRoute,
-  type ReadPage,
-  retryAfterMs,
-  type SearchHit,
-  type WebProvider,
-} from "../provider-routing";
+import { ProviderError, type ReadPage, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
 
 const ENDPOINT = "https://mcp.exa.ai/mcp";
 const TIMEOUT_MS = 30_000;
@@ -139,8 +132,10 @@ function readPage(texts: string[]): ReadPage {
   throw new ProviderError("transient");
 }
 
-export function createExaMcpProvider(): WebProvider {
-  const anonymous: ProviderRoute = {
+export function createExaAnonProvider(): WebProvider {
+  return {
+    name: "exa-anon",
+    mode: "anonymous",
     async search(query, signal) {
       return searchHits(await callTool("web_search_exa", { query, numResults: 5 }, signal));
     },
@@ -148,5 +143,4 @@ export function createExaMcpProvider(): WebProvider {
       return readPage(await callTool("web_fetch_exa", { urls: [url], maxCharacters: 100000 }, signal));
     },
   };
-  return { name: "exa", anonymous };
 }

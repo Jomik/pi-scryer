@@ -75,7 +75,7 @@ describe("web_search extension", () => {
       }),
     );
     const result = await getRegisteredTool("web_search").execute("call-1", { query: "example" }, undefined, noop, {});
-    expect(result.details).toMatchObject({ provider: "tavily", mode: "anonymous" });
+    expect(result.details).toMatchObject({ provider: "tavily-anon", mode: "anonymous" });
     expect(calls).toEqual(["https://mcp.exa.ai/mcp", "https://api.tavily.com/search"]);
   });
 
@@ -123,9 +123,15 @@ describe("web_search extension", () => {
     const tool = getRegisteredTool("web_search");
 
     const first = await tool.execute("call-1", { query: "example" }, new AbortController().signal, noop, {});
-    expect(first.content[0].text).toContain("Provider: Exa (anonymous)");
+    expect(first.content[0].text).toContain("Provider: Exa-anon (anonymous)");
     expect(first.content[0].text).toContain("1. MCP hit\nSource: https://example.com/mcp\nMCP excerpt");
-    expect(first.details).toEqual({ resultCount: 1, omitted: 0, truncated: false, provider: "exa", mode: "anonymous" });
+    expect(first.details).toEqual({
+      resultCount: 1,
+      omitted: 0,
+      truncated: false,
+      provider: "exa-anon",
+      mode: "anonymous",
+    });
 
     const second = await tool.execute("call-2", { query: "example" }, new AbortController().signal, noop, {});
     expect(second.content[0].text).toContain("Provider: Tavily (keyed)");

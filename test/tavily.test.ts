@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProviderError } from "../src/provider-routing";
-import { createTavilyProvider } from "../src/providers/tavily";
+import { type AccessMode, ProviderError } from "../src/provider-routing";
+import { createTavilyProviders } from "../src/providers/tavily";
+
+function provider(mode: AccessMode) {
+  const entry = createTavilyProviders().find((entry) => entry.mode === mode);
+  if (!entry) throw new Error(`Missing Tavily ${mode} provider`);
+  return entry;
+}
 
 const originalKey = process.env.TAVILY_API_KEY;
 const secret = "private-tavily-token";
@@ -27,10 +33,9 @@ afterEach(() => {
 describe("Tavily provider", () => {
   it("creates only anonymous routes without a nonblank key", () => {
     process.env.TAVILY_API_KEY = "  ";
-    expect(createTavilyProvider().name).toBe("tavily");
-    expect(createTavilyProvider().keyed).toBeUndefined();
-    expect(createTavilyProvider().anonymous).toHaveProperty("read");
-    expect(createTavilyProvider().anonymous).toHaveProperty("search");
+    expect(createTavilyProviders()).toEqual([
+      { name: "tavily-anon", mode: "anonymous", read: expect.any(Function), search: expect.any(Function) },
+    ]);
   });
 
   it("searches in keyed and keyless modes with isolated headers and normalized hits", async () => {
@@ -38,9 +43,8 @@ describe("Tavily provider", () => {
     const fetchMock = mockFetch({
       results: [{ title: " Title ", url: ` ${pageUrl} `, content: " Excerpt " }, { url: "bad" }],
     });
-    const provider = createTavilyProvider();
-    for (const route of [provider.keyed, provider.anonymous]) {
-      await expect(route?.search("query")).resolves.toEqual([{ title: "Title", url: pageUrl, snippet: "Excerpt" }]);
+    for (const route of createTavilyProviders()) {
+      await expect(route.search("query")).resolves.toEqual([{ title: "Title", url: pageUrl, snippet: "Excerpt" }]);
     }
     expect(fetchMock).toHaveBeenCalledTimes(2);
     for (const [index, [url, init]] of fetchMock.mock.calls.entries()) {
@@ -58,9 +62,8 @@ describe("Tavily provider", () => {
   it("extracts in both modes using the resolved URL and optional title", async () => {
     process.env.TAVILY_API_KEY = secret;
     const fetchMock = mockFetch({ results: [{ url: " https://resolved.example/ ", raw_content: " Page content " }] });
-    const provider = createTavilyProvider();
-    for (const route of [provider.keyed, provider.anonymous]) {
-      await expect(route?.read(pageUrl)).resolves.toEqual({
+    for (const route of createTavilyProviders()) {
+      await expect(route.read(pageUrl)).resolves.toEqual({
         url: "https://resolved.example/",
         title: undefined,
         text: "Page content",
@@ -88,67 +91,59 @@ describe("Tavily provider", () => {
   ] as const)("classifies keyed HTTP %i without leaking data", async (status, body, kind, retryAfterMs) => {
     process.env.TAVILY_API_KEY = secret;
     mockFetch(body, status);
-    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError(kind, retryAfterMs));
+    await expect(provider("keyed").search("query")).rejects.toEqual(new ProviderError(kind, retryAfterMs));
   });
 
   it("classifies non-OK keyless limit codes and retry delays without leaking data", async () => {
     process.env.TAVILY_API_KEY = secret;
     mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400);
-    await expect(createTavilyProvider().anonymous?.read(pageUrl)).rejects.toEqual(
-      new ProviderError("rate-limit", 12000),
-    );
+    await expect(provider("anonymous").read(pageUrl)).rejects.toEqual(new ProviderError("rate-limit", 12000));
   });
 
   it("uses Retry-After on keyed HTTP 429 without reading body hints or leaking credentials", async () => {
     process.env.TAVILY_API_KEY = secret;
     mockFetch({ error: { message: secret } }, 429, { "Retry-After": "7" });
-    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError("rate-limit", 7000));
+    await expect(provider("keyed").search("query")).rejects.toEqual(new ProviderError("rate-limit", 7000));
   });
 
   it("ignores keyed body retry hints", async () => {
     process.env.TAVILY_API_KEY = secret;
     mockFetch({ error: { retry_after_seconds: 12, message: secret } }, 429);
-    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
+    await expect(provider("keyed").search("query")).rejects.toEqual(new ProviderError("rate-limit"));
   });
 
   it("prefers Retry-After over the keyless limit body delay", async () => {
     mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400, {
       "Retry-After": "7",
     });
-    await expect(createTavilyProvider().anonymous?.read(pageUrl)).rejects.toEqual(
-      new ProviderError("rate-limit", 7000),
-    );
+    await expect(provider("anonymous").read(pageUrl)).rejects.toEqual(new ProviderError("rate-limit", 7000));
   });
 
   it("uses the keyless body delay when Retry-After is invalid", async () => {
     mockFetch({ error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } }, 400, {
       "Retry-After": "1.5",
     });
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(
-      new ProviderError("rate-limit", 12000),
-    );
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("rate-limit", 12000));
   });
 
   it("leaves the delay unset for HTTP 429 without a valid hint so the router uses its default", async () => {
     mockFetch({ error: { retry_after_seconds: -1, message: secret } }, 429, { "Retry-After": "invalid" });
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("rate-limit"));
   });
 
   it.each(["RATE_LIMITED", "REQUEST_THROTTLED"])("classifies keyless %s as rate-limited", async (code) => {
     mockFetch({ error: { code, retry_after_seconds: 12, message: secret } }, 400);
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(
-      new ProviderError("rate-limit", 12000),
-    );
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("rate-limit", 12000));
   });
 
   it.each(["INVALID_URL", "SERVER_ERROR"])("classifies unrelated keyless %s as transient", async (code) => {
     mockFetch({ error: { code, retry_after_seconds: 12, message: secret } }, 400, { "Retry-After": "7" });
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("transient"));
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("transient"));
   });
 
   it("does not classify success envelopes as errors", async () => {
     mockFetch({ results: [], error: { code: "KEYLESS_LIMIT", retry_after_seconds: 12, message: secret } });
-    await expect(createTavilyProvider().anonymous?.search("query")).resolves.toEqual([]);
+    await expect(provider("anonymous").search("query")).resolves.toEqual([]);
   });
 
   it.each([
@@ -157,12 +152,12 @@ describe("Tavily provider", () => {
     "PAYMENT_REQUIRED",
   ])("classifies keyless %s as quota", async (code) => {
     mockFetch({ error: { code, message: secret } }, 400);
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("quota"));
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("quota"));
   });
 
   it("classifies keyless HTTP 429 as rate-limited", async () => {
     mockFetch({ error: { message: secret } }, 429);
-    await expect(createTavilyProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("rate-limit"));
+    await expect(provider("anonymous").search("query")).rejects.toEqual(new ProviderError("rate-limit"));
   });
 
   it.each([
@@ -173,7 +168,7 @@ describe("Tavily provider", () => {
     [{ results: [{ url: "javascript:bad", raw_content: "content" }] }, "read"],
   ] as const)("rejects malformed %s for %s", async (body, operation) => {
     mockFetch(body);
-    const route = createTavilyProvider().anonymous;
+    const route = provider("anonymous");
     const pending = operation === "search" ? route?.search("query") : route?.read(pageUrl);
     await expect(pending).rejects.toMatchObject({ kind: "transient" });
   });
@@ -184,19 +179,19 @@ describe("Tavily provider", () => {
       "fetch",
       vi.fn<typeof fetch>(async () => new Response(secret)),
     );
-    await expect(createTavilyProvider().keyed?.search("query")).rejects.toEqual(new ProviderError("transient"));
+    await expect(provider("keyed").search("query")).rejects.toEqual(new ProviderError("transient"));
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async () => {
         throw new Error(secret);
       }),
     );
-    await expect(createTavilyProvider().keyed?.read(pageUrl)).rejects.toEqual(new ProviderError("transient"));
+    await expect(provider("keyed").read(pageUrl)).rejects.toEqual(new ProviderError("transient"));
   });
 
   it("returns empty search results without treating them as malformed", async () => {
     mockFetch({ results: [] });
-    await expect(createTavilyProvider().anonymous?.search("query")).resolves.toEqual([]);
+    await expect(provider("anonymous").search("query")).resolves.toEqual([]);
   });
 
   it("maps timeouts to transient errors", async () => {
@@ -211,7 +206,7 @@ describe("Tavily provider", () => {
           }),
       ),
     );
-    const pending = createTavilyProvider().anonymous?.read(pageUrl);
+    const pending = provider("anonymous").read(pageUrl);
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeout.abort();
     await expect(pending).rejects.toEqual(new ProviderError("transient"));
@@ -226,7 +221,7 @@ describe("Tavily provider", () => {
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const pending = createTavilyProvider().anonymous?.search("query", controller.signal);
+    const pending = provider("anonymous").search("query", controller.signal);
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);

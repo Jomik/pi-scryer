@@ -1,14 +1,13 @@
 import type { WebProvider } from "../provider-routing";
-import { createExaKeyedRoute } from "./exa";
-import { createExaMcpProvider } from "./exa-anon";
-import { createTavilyProvider } from "./tavily";
+import { createExaProvider } from "./exa";
+import { createExaAnonProvider } from "./exa-anon";
+import { createTavilyProviders } from "./tavily";
 
 export function createProviderRegistry(): () => Promise<WebProvider[]> {
-  const exa = createExaMcpProvider();
-  const tavily = createTavilyProvider();
+  const exaAnon = createExaAnonProvider();
+  const tavily = createTavilyProviders();
   return async () => {
-    const keyed = await createExaKeyedRoute();
-    if (keyed) exa.keyed = keyed;
-    return [exa, tavily];
+    const exa = await createExaProvider();
+    return [...(exa ? [exa] : []), exaAnon, ...tavily];
   };
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProviderRouter, ProviderError } from "../src/provider-routing";
-import { createExaMcpProvider } from "../src/providers/exa-anon";
+import { createExaAnonProvider } from "../src/providers/exa-anon";
 
 const url = "https://example.com/page";
 const secret = "private-exa-token";
@@ -31,12 +31,14 @@ describe("anonymous Exa MCP provider", () => {
   it("uses default tools without ever sending the configured API key", async () => {
     process.env.EXA_API_KEY = secret;
     const fetchMock = mock(json(result(`Title: Title\nURL: ${url}\nHighlights:\nSnippet`)));
-    const provider = createExaMcpProvider();
-    expect(provider.name).toBe("exa");
-    expect(provider.keyed).toBeUndefined();
-    await expect(provider.anonymous?.search("query")).resolves.toEqual([{ url, title: "Title", snippet: "Snippet" }]);
+    const provider = createExaAnonProvider();
+    expect(provider.name).toBe("exa-anon");
+    expect(provider.mode).toBe("anonymous");
+    expect(provider).not.toHaveProperty("keyed");
+    expect(provider).not.toHaveProperty("anonymous");
+    await expect(provider.search("query")).resolves.toEqual([{ url, title: "Title", snippet: "Snippet" }]);
     const readMock = mock(json(result(`# Title\nURL: ${url}\n\nEntire page\nsecond line`)));
-    await expect(provider.anonymous?.read(url)).resolves.toEqual({
+    await expect(provider.read(url)).resolves.toEqual({
       url,
       title: "Title",
       text: "Entire page\nsecond line",
@@ -72,7 +74,7 @@ describe("anonymous Exa MCP provider", () => {
     ];
     const sse = `: ping\n\nevent: message\ndata: ${JSON.stringify(result(entries.join("\n\n---\n\n")))}\n\n`;
     mock(new Response(sse, { headers: { "content-type": "text/event-stream" } }));
-    const hits = await createExaMcpProvider().anonymous?.search("query");
+    const hits = await createExaAnonProvider().search("query");
     expect(hits).toHaveLength(5);
     expect(hits?.[0]).toEqual({ url: "https://example.com/0", title: "0", snippet: "excerpt 0" });
   });
@@ -82,7 +84,7 @@ describe("anonymous Exa MCP provider", () => {
       result(`# (no title)\nURL: ${url}\nPublished: 2025-01-01\nAuthor: Someone\n\nFirst\n\nLast`),
     );
     mock(new Response(`event: message\ndata: ${payload}\n\n`, { headers: { "content-type": "text/event-stream" } }));
-    await expect(createExaMcpProvider().anonymous?.read(url)).resolves.toEqual({
+    await expect(createExaAnonProvider().read(url)).resolves.toEqual({
       url,
       title: undefined,
       text: "First\n\nLast",
@@ -90,7 +92,7 @@ describe("anonymous Exa MCP provider", () => {
   });
 
   it("returns empty search messages and rejects malformed search or read output", async () => {
-    const route = createExaMcpProvider().anonymous;
+    const route = createExaAnonProvider();
     mock(json(result("No search results found. Please try a different query.")));
     await expect(route?.search("query")).resolves.toEqual([]);
     mock(json(result("")));
@@ -110,7 +112,7 @@ describe("anonymous Exa MCP provider", () => {
   });
 
   it("classifies HTTP and embedded failures without exposing response text", async () => {
-    const route = createExaMcpProvider().anonymous;
+    const route = createExaAnonProvider();
     mock(json({ error: secret }, 429, { "retry-after": "12" }));
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("rate-limit", 12000));
     mock(json({ error: secret }, 402));
@@ -137,7 +139,7 @@ describe("anonymous Exa MCP provider", () => {
 
   it("accepts HTTP-date and fractional seconds Retry-After but rejects informal dates", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"));
-    const route = createExaMcpProvider().anonymous;
+    const route = createExaAnonProvider();
     for (const [header, delay] of [
       ["Wed, 21 Oct 2015 07:28:07 GMT", 7_000],
       ["1.5", 1_500],
@@ -156,13 +158,13 @@ describe("anonymous Exa MCP provider", () => {
       .mockResolvedValueOnce(json({ error: secret }, 429, { "retry-after": "October 21, 2015 07:28:07 GMT" }))
       .mockResolvedValue(json(result(`Title: Title\nURL: ${url}\nHighlights:\nSnippet`)));
     vi.stubGlobal("fetch", fetchMock);
-    const router = createProviderRouter([createExaMcpProvider()]);
-    await expect(router.search("query")).rejects.toThrow("exa/anonymous: rate-limit");
+    const router = createProviderRouter([createExaAnonProvider()]);
+    await expect(router.search("query")).rejects.toThrow("exa-anon/anonymous: rate-limit");
     now += 29_999;
     await expect(router.search("query")).rejects.toThrow("no eligible routes");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     now += 1;
-    await expect(router.search("query")).resolves.toMatchObject({ provider: "exa", mode: "anonymous" });
+    await expect(router.search("query")).resolves.toMatchObject({ provider: "exa-anon", mode: "anonymous" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -177,13 +179,13 @@ describe("anonymous Exa MCP provider", () => {
           }),
       ),
     );
-    const pending = createExaMcpProvider().anonymous?.search("query", controller.signal);
+    const pending = createExaAnonProvider().search("query", controller.signal);
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
 
     const timeout = new AbortController();
     const spy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
-    const timed = createExaMcpProvider().anonymous?.read(url);
+    const timed = createExaAnonProvider().read(url);
     expect(spy).toHaveBeenCalledWith(30_000);
     timeout.abort();
     await expect(timed).rejects.toEqual(new ProviderError("transient"));
@@ -193,6 +195,6 @@ describe("anonymous Exa MCP provider", () => {
         throw new Error(secret);
       }),
     );
-    await expect(createExaMcpProvider().anonymous?.search("query")).rejects.toEqual(new ProviderError("transient"));
+    await expect(createExaAnonProvider().search("query")).rejects.toEqual(new ProviderError("transient"));
   });
 });

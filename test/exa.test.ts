@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/provider-routing";
-import { callExaApi, createExaKeyedRoute, fetchExaContent } from "../src/providers/exa";
+import { callExaApi, createExaProvider, fetchExaContent } from "../src/providers/exa";
 
 const resolveKey = vi.hoisted(() => vi.fn<() => Promise<string | undefined>>());
 vi.mock("../src/credentials", () => ({ resolveExaApiKey: resolveKey }));
@@ -23,15 +23,20 @@ afterEach(() => {
 describe("keyed Exa route", () => {
   it("is available only when the credential resolver supplies a key", async () => {
     resolveKey.mockResolvedValueOnce(undefined).mockResolvedValueOnce("  ").mockResolvedValue(secret);
-    await expect(createExaKeyedRoute()).resolves.toBeUndefined();
-    await expect(createExaKeyedRoute()).resolves.toBeUndefined();
-    expect(await createExaKeyedRoute()).toMatchObject({ search: expect.any(Function), read: expect.any(Function) });
+    await expect(createExaProvider()).resolves.toBeUndefined();
+    await expect(createExaProvider()).resolves.toBeUndefined();
+    expect(await createExaProvider()).toMatchObject({
+      name: "exa",
+      mode: "keyed",
+      search: expect.any(Function),
+      read: expect.any(Function),
+    });
     expect(resolveKey).toHaveBeenCalledTimes(3);
   });
 
   it("uses the existing authenticated search payload and normalizes search results", async () => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     const fetchMock = mock({
       results: [
         { url: `  ${url}  `, title: `  ${"T".repeat(210)}  `, text: `  ${"s".repeat(510)}  ` },
@@ -59,7 +64,7 @@ describe("keyed Exa route", () => {
 
   it("accepts empty search results, but treats malformed responses as transient", async () => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     mock({ results: [] });
     await expect(route?.search("query")).resolves.toEqual([]);
     mock({ results: [{ url: "ftp://example.com" }] });
@@ -70,7 +75,7 @@ describe("keyed Exa route", () => {
 
   it("reads through the existing Exa content parser", async () => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     const fetchMock = mock({ results: [{ url: ` ${url} `, title: " Page ", text: "  Full page\ntext  " }] });
     await expect(route?.read(url)).resolves.toEqual({ url, title: "Page", text: "Full page\ntext" });
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.exa.ai/contents");
@@ -86,7 +91,7 @@ describe("keyed Exa route", () => {
     [503, "transient"],
   ] as const)("maps HTTP %i without exposing provider response text", async (status, kind) => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     mock({ error: secret }, status);
     await expect(route?.search("query")).rejects.toEqual(new ProviderError(kind));
     await expect(route?.read(url)).rejects.toEqual(new ProviderError(kind));
@@ -94,14 +99,14 @@ describe("keyed Exa route", () => {
 
   it("maps a missing credential after route creation without changing the legacy error", async () => {
     resolveKey.mockResolvedValueOnce(secret).mockResolvedValue(undefined);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("invalid-credentials"));
     await expect(route?.read(url)).rejects.toEqual(new ProviderError("invalid-credentials"));
   });
 
   it("uses valid Retry-After seconds and HTTP dates for keyed rate limits", async () => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"));
     for (const [header, delay] of [
       ["12", 12_000],
@@ -127,7 +132,7 @@ describe("keyed Exa route", () => {
 
   it("propagates caller cancellation and maps timeout, network and invalid JSON to transient", async () => {
     resolveKey.mockResolvedValue(secret);
-    const route = await createExaKeyedRoute();
+    const route = await createExaProvider();
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(
