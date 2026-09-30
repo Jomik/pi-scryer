@@ -2,10 +2,10 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, defineTool, truncateHead } from "
 import { Text, TruncatedText, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { CachedReadResult, ContinuationCache } from "./continuation-cache";
-import { isHttpUrl, isNonEmptyString, parseCachedExaContentResult, truncateForDisplay } from "./exa";
 import type { GitHubReader } from "./github";
 import { providerLabel } from "./provider-label";
 import type { AccessMode, createProviderRouter, ProviderName } from "./provider-routing";
+import { isHttpUrl, isNonEmptyString, parseReadPage, truncateForDisplay } from "./web-content";
 
 const CALL_PREVIEW_MAX_CHARS = 80;
 const DISPLAY_LINE_MAX_CHARS = 80;
@@ -177,7 +177,7 @@ export function createWebReadTool(
           result = fromReader;
         } else {
           const { value, provider, mode } = await (await getRouter()).read(normalizedUrl, signal);
-          const page = parseCachedExaContentResult(value);
+          const page = parseReadPage(value);
           if (!page) {
             throw new Error("web_read: content provider returned an invalid page");
           }

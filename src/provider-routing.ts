@@ -1,13 +1,11 @@
+import { type ReadPage, SEARCH_URL_MAX_CHARS } from "./web-content";
+
+export { type ReadPage, SEARCH_URL_MAX_CHARS } from "./web-content";
+
 export interface SearchHit {
   title?: string;
   url: string;
   snippet?: string;
-}
-
-export interface ReadPage {
-  title?: string;
-  url: string;
-  text: string;
 }
 
 export type ProviderName = string;
@@ -50,7 +48,6 @@ interface RouteState {
   retryAt: number;
 }
 
-export const SEARCH_URL_MAX_CHARS = 2048;
 const RATE_LIMIT_COOLDOWN_MS = 30_000;
 
 /** Parses Exa Retry-After seconds or HTTP dates without Date.parse's informal date coercions. */

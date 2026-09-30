@@ -2,10 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExaContentResult, parseCachedExaContentResult } from "./exa";
 import type { AccessMode, ProviderName } from "./provider-routing";
+import { parseReadPage, type ReadPage } from "./web-content";
 
-export type CachedReadResult = ExaContentResult &
+export type CachedReadResult = ReadPage &
   ({ provider: ProviderName; mode: AccessMode } | { provider?: never; mode?: never });
 
 function parseAttribution(
@@ -39,7 +39,7 @@ export interface ContinuationCache {
  * CACHE_MAX_ENTRIES pages, each backed by a private temp-directory file
  * keyed by a SHA-256 hash of the normalized URL (never the raw URL). Only
  * file path/order metadata is retained in memory between execute calls; no
- * full Exa text is kept resident. All read/write/evict/cleanup operations
+ * full page text is kept resident. All read/write/evict/cleanup operations
  * are serialized through a small promise queue so cleanup and eviction
  * never race an in-flight file operation; network fetches stay outside it.
  */
@@ -91,7 +91,7 @@ export function createContinuationCache(): ContinuationCache {
       try {
         const raw = await readFile(entry.file, "utf-8");
         const parsed: unknown = JSON.parse(raw);
-        const normalized = parseCachedExaContentResult(parsed);
+        const normalized = parseReadPage(parsed);
         if (!normalized || typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
           throw new Error("invalid cache entry");
         }

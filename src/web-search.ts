@@ -7,15 +7,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text, TruncatedText } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { isHttpUrl, isNonEmptyString, isRecord, SEARCH_TITLE_MAX_CHARS, truncateForDisplay } from "./exa";
 import { providerLabel } from "./provider-label";
+import type { AccessMode, createProviderRouter, ProviderName, SearchHit } from "./provider-routing";
 import {
-  type AccessMode,
-  type createProviderRouter,
-  type ProviderName,
+  isHttpUrl,
+  isNonEmptyString,
+  isRecord,
+  SEARCH_TITLE_MAX_CHARS,
   SEARCH_URL_MAX_CHARS,
-  type SearchHit,
-} from "./provider-routing";
+  truncateForDisplay,
+} from "./web-content";
 
 const SEARCH_MAX_RESULTS = 5;
 const SEARCH_EXCERPT_MAX_CHARS = 500;

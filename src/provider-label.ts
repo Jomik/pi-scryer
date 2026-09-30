@@ -1,5 +1,5 @@
-import { truncateForDisplay } from "./exa";
 import type { ProviderName } from "./provider-routing";
+import { truncateForDisplay } from "./web-content";
 
 /** Keep provider attribution bounded and free of line breaks or terminal controls. */
 export function providerLabel(name: ProviderName): string {

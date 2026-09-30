@@ -1,16 +1,18 @@
 import { resolveExaApiKey } from "./credentials";
+import { ProviderError, type ProviderRoute, retryAfterMs, type SearchHit } from "./provider-routing";
 import {
-  ProviderError,
-  type ProviderRoute,
-  retryAfterMs,
+  isHttpUrl,
+  isNonEmptyString,
+  isRecord,
+  type ReadPage,
+  SEARCH_TITLE_MAX_CHARS,
   SEARCH_URL_MAX_CHARS,
-  type SearchHit,
-} from "./provider-routing";
+  truncateForDisplay,
+} from "./web-content";
 
 const EXA_CONTENTS_URL = "https://api.exa.ai/contents";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const REQUEST_TIMEOUT_MS = 30_000;
-const SEARCH_TITLE_MAX_CHARS = 200;
 
 class ExaHttpError extends Error {
   constructor(
@@ -22,70 +24,7 @@ class ExaHttpError extends Error {
   }
 }
 
-export { EXA_SEARCH_URL, SEARCH_TITLE_MAX_CHARS, SEARCH_URL_MAX_CHARS };
-
-export function truncateForDisplay(text: string, maxChars: number): string {
-  const singleLine = text.replace(/\s+/g, " ").trim();
-  if (singleLine.length <= maxChars) {
-    return singleLine;
-  }
-  return `${singleLine.slice(0, Math.max(0, maxChars - 1))}…`;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-export function isHttpUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-export interface ExaContentResult {
-  title?: string;
-  url: string;
-  text: string;
-}
-
-/**
- * Parses and normalizes a cached JSON value with the same validity rules
- * applied to a fresh Exa result (non-empty trimmed text, absolute http(s)
- * resolved URL within the size limit, optional title normalized/capped).
- * Returns undefined for any corrupt or invalid cache entry so callers treat
- * it as a cache miss.
- */
-export function parseCachedExaContentResult(value: unknown): ExaContentResult | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const { url, text, title } = value;
-  if (!isNonEmptyString(text)) {
-    return undefined;
-  }
-  if (!isNonEmptyString(url) || !isHttpUrl(url.trim())) {
-    return undefined;
-  }
-  const resolvedUrl = url.trim();
-  if (resolvedUrl.length > SEARCH_URL_MAX_CHARS) {
-    return undefined;
-  }
-  if (title !== undefined && typeof title !== "string") {
-    return undefined;
-  }
-  return {
-    title: isNonEmptyString(title) ? truncateForDisplay(title, SEARCH_TITLE_MAX_CHARS) : undefined,
-    url: resolvedUrl,
-    text: text.trim(),
-  };
-}
+export { EXA_SEARCH_URL };
 
 /**
  * Performs an authenticated POST to an Exa API endpoint, applying the shared
@@ -162,10 +101,7 @@ export async function callExaApi(
  * Fetches and parses a single page's content from Exa for the given
  * normalized URL.
  */
-export async function fetchExaContent(
-  normalizedUrl: string,
-  signal: AbortSignal | undefined,
-): Promise<ExaContentResult> {
+export async function fetchExaContent(normalizedUrl: string, signal: AbortSignal | undefined): Promise<ReadPage> {
   const body = await callExaApi("web_read", EXA_CONTENTS_URL, { urls: [normalizedUrl], text: true }, signal);
   return parseFirstResult(body);
 }
@@ -240,7 +176,7 @@ export async function createExaKeyedRoute(): Promise<ProviderRoute | undefined> 
   };
 }
 
-function parseFirstResult(body: unknown): ExaContentResult {
+function parseFirstResult(body: unknown): ReadPage {
   if (!isRecord(body)) {
     throw new Error("web_read: malformed response from content provider");
   }

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { ExaContentResult } from "./exa";
+import type { ReadPage } from "./web-content";
 
 const GITHUB_TMP_PARENT = "/tmp/pi-scryer";
 const CLONE_DIR_PREFIX = "repo-";
@@ -15,7 +15,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
 
 export interface GitHubReader {
-  read(url: string, signal: AbortSignal | undefined): Promise<ExaContentResult | undefined>;
+  read(url: string, signal: AbortSignal | undefined): Promise<ReadPage | undefined>;
   cleanup(): Promise<void>;
 }
 
@@ -521,7 +521,7 @@ export function createGitHubReader(): GitHubReader {
     return inFlight;
   }
 
-  async function read(url: string, signal: AbortSignal | undefined): Promise<ExaContentResult | undefined> {
+  async function read(url: string, signal: AbortSignal | undefined): Promise<ReadPage | undefined> {
     const parsed = parseGitHubUrl(url);
     if (!parsed) {
       return undefined;
