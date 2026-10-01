@@ -21,39 +21,58 @@ pi -e npm:pi-scryer
 
 No API key is required: Exa's hosted MCP search/fetch and Tavily's keyless
 REST search/extract provide anonymous, rate-limited access. Optional keys enable
-keyed routes. Exa's keyed route uses the Exa REST API; Tavily's keyed route uses
-`TAVILY_API_KEY` from the environment (no Tavily Keychain or `/scryer` login).
+keyed routes: Exa REST and Tavily REST.
 
-For an optional Exa key on macOS, run `/scryer login` in an interactive
-session to store it in the macOS Keychain (fixed service `pi-scryer`, account
-`exa-api-key`). This is the recommended path: the key is stored securely by
-the OS and is never written to any project, session, or cache file.
+On macOS, run `/scryer login exa` or `/scryer login tavily` in the
+interactive Pi TUI. A native dialog hides the entered key and stores it in the
+macOS Keychain under the fixed service `pi-scryer`, with provider-specific
+accounts `exa-api-key` and `tavily-api-key`. This is the recommended path:
+the key is stored securely by the OS, never in a project, session, or cache file.
 
-On headless macOS or any other platform, set the Exa environment variable
-instead:
+On headless macOS or any other platform, configure environment variables instead
+(for either or both providers):
 
 ```
 export EXA_API_KEY=...
+export TAVILY_API_KEY=...
 ```
 
-Other `/scryer` subcommands:
+Login outside the interactive macOS TUI gives guidance to set the selected
+provider's environment variable rather than opening a prompt.
 
-- `/scryer status` — reports which source will supply the Exa key (`Keychain`,
-  `environment`, or `missing`) without reading or revealing its value. It does
-  not check balance, route health, or Tavily credentials.
-- `/scryer logout` — removes the Keychain item (macOS only, idempotent).
-  Does not touch the `EXA_API_KEY` environment variable; if it is still set,
-  it remains available as a fallback.
+Credential commands:
 
-Precedence: on macOS, the Keychain is checked first; if it is missing,
-empty, or inaccessible, the trimmed `EXA_API_KEY` environment variable is
-used instead. On non-macOS platforms, only the environment variable is
-consulted. The key itself is never shown in any notification, and never
-stored or cached in any project, session, or cache file. Anonymous requests
-never send a configured API key. Tavily captures `TAVILY_API_KEY` when the
-extension activates; Exa's keyed-route presence is determined on the first
-hosted search or read. Credential changes (including `/scryer login` and
-`/scryer logout`) require restarting Pi to change active routes. Restarting
+- `/scryer login exa` or `/scryer login tavily` — stores the selected
+  provider's key in Keychain.
+- `/scryer logout exa` or `/scryer logout tavily` — removes only the
+  selected Keychain account (macOS only, idempotent). It never changes either
+  environment variable or the other provider's account; a configured environment
+  fallback remains available. On non-macOS platforms, it gives guidance to unset
+  the selected environment variable.
+- `/scryer status` — reports both Exa and Tavily credential sources:
+  `Keychain`, `environment` (with the variable name), or `missing`, without
+  reading Keychain values or revealing keys. It does not check balance or route
+  health.
+- Bare `/scryer` reports both sources and usage. The provider is **required**
+  for login and logout: bare `/scryer login` or `/scryer logout` only shows
+  usage; neither defaults to Exa. Anonymous and unknown provider names are
+  rejected.
+- Autocomplete offers only the subcommands `login`, `logout`, `status` and,
+  after login/logout, registered keyed provider names (`exa`, `tavily`).
+
+Precedence for each provider: on macOS, Keychain is checked first; if it is
+missing, empty, or inaccessible, the trimmed `EXA_API_KEY` or `TAVILY_API_KEY`
+environment variable is used instead. On non-macOS platforms, only the
+environment is consulted. Keys are never shown in notifications or stored or
+cached in any project, session, or cache file. Anonymous requests never send a
+configured API key.
+
+Both keyed provider factories resolve credentials lazily on the first hosted
+search or read, not at extension activation; Tavily no longer captures its key
+eagerly at activation. The resulting provider registry is cached for the Pi
+process. GitHub-only reads do not load it or probe Exa/Tavily credentials.
+Credential changes (including login and logout) require restarting Pi to refresh
+active routes; successful login/logout notices include this reminder. Restarting
 also resets route availability.
 
 ## Provider routing
@@ -214,6 +233,20 @@ Tavily's keyed and anonymous providers share the same REST code. In
 `read`) with `name: string` and `mode: "anonymous" | "keyed"`. Shared content
 types and helpers live in `src/web-content.ts`. The router alone chooses the
 provider; neither tool exposes a provider argument to the agent.
+
+The single static credential metadata list in
+`src/providers/credential-providers.ts` defines registered keyed names,
+environment variables, and Keychain accounts. It drives credential commands
+(including status and autocomplete) and the shared `resolveProviderApiKey`
+resolver used by both keyed provider factories. The registry loads both factories
+lazily on the first hosted call.
+
+Vitest loads the fail-closed guards in `test/setup.ts` before modules under test:
+unexpected subprocess or network calls fail rather than invoking real external
+boundaries. `AGENTS.md` requires hermetic, noninteractive tests: no real OS
+prompts, Keychain or credential-store access, `osascript`, `security`, `gh`,
+`git`, or network calls. Mock external boundaries before loading source modules;
+use deterministic fixtures for prompts, login, and cancellation.
 
 ```
 npm install
