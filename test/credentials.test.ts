@@ -7,6 +7,7 @@ import {
   KEYCHAIN_SERVICE,
   promptForApiKey,
   resolveExaApiKey,
+  resolveProviderApiKey,
   scryerCommandHandler,
   storeKeychainKey,
 } from "../src/credentials";
@@ -18,6 +19,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const ORIGINAL_ENV = process.env.EXA_API_KEY;
+const ORIGINAL_TAVILY_ENV = process.env.TAVILY_API_KEY;
 const SECRET_KEY = "test-only-secret-key";
 
 type ExecFileCallback = (
@@ -53,6 +55,7 @@ describe("credentials", () => {
   beforeEach(() => {
     execFileMock.mockReset();
     delete process.env.EXA_API_KEY;
+    delete process.env.TAVILY_API_KEY;
   });
 
   afterEach(() => {
@@ -61,7 +64,142 @@ describe("credentials", () => {
     } else {
       process.env.EXA_API_KEY = ORIGINAL_ENV;
     }
+    if (ORIGINAL_TAVILY_ENV === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = ORIGINAL_TAVILY_ENV;
+    }
     vi.restoreAllMocks();
+  });
+
+  describe("resolveProviderApiKey", () => {
+    it("prefers Tavily Keychain over its env and never uses Exa credentials", async () => {
+      mockMacOS();
+      succeedWith(`  ${SECRET_KEY}  \n`);
+      process.env.TAVILY_API_KEY = "tavily-env";
+      process.env.EXA_API_KEY = "exa-env";
+
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe(SECRET_KEY);
+      expect(execFileMock.mock.calls[0][1]).toEqual([
+        "find-generic-password",
+        "-s",
+        "pi-scryer",
+        "-a",
+        "tavily-api-key",
+        "-w",
+      ]);
+    });
+
+    it.each([
+      "missing",
+      "inaccessible",
+      "empty",
+    ])("falls back to trimmed Tavily env when Keychain is %s", async (state) => {
+      mockMacOS();
+      if (state === "empty") succeedWith("  \n");
+      else failWith(state === "missing" ? "The specified item could not be found." : `denied ${SECRET_KEY}`);
+      process.env.TAVILY_API_KEY = "  tavily-env  ";
+      process.env.EXA_API_KEY = "exa-env";
+
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe("tavily-env");
+    });
+
+    it.each(["linux", "win32"] as const)("uses only trimmed Tavily env on %s without caching", async (platform) => {
+      vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      process.env.TAVILY_API_KEY = "  tavily-env  ";
+      process.env.EXA_API_KEY = "exa-env";
+
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe("tavily-env");
+      process.env.TAVILY_API_KEY = "next-key";
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe("next-key");
+      process.env.TAVILY_API_KEY = "  ";
+      await expect(resolveProviderApiKey("tavily")).resolves.toBeUndefined();
+      delete process.env.TAVILY_API_KEY;
+      await expect(resolveProviderApiKey("tavily")).resolves.toBeUndefined();
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+
+    it("re-reads Keychain on each call and does not fall back to Exa env", async () => {
+      mockMacOS();
+      process.env.EXA_API_KEY = "exa-env";
+      succeedWith(SECRET_KEY);
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe(SECRET_KEY);
+      succeedWith("next-key");
+      await expect(resolveProviderApiKey("tavily")).resolves.toBe("next-key");
+      succeedWith("  \n");
+      await expect(resolveProviderApiKey("tavily")).resolves.toBeUndefined();
+      expect(execFileMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("Tavily Keychain operations", () => {
+    it("isolates all security argv to Tavily's account, keeping key and shell text discrete", async () => {
+      mockMacOS();
+      succeedWith(SECRET_KEY);
+      const key = "key with 'quotes' $(subshell) ; --flags\n";
+
+      await fetchKeychainKey("tavily");
+      await hasKeychainKey("tavily");
+      await storeKeychainKey("tavily", key);
+      await deleteKeychainKey("tavily");
+
+      expect(execFileMock.mock.calls.map(([file, args]) => [file, args])).toEqual([
+        ["security", ["find-generic-password", "-s", "pi-scryer", "-a", "tavily-api-key", "-w"]],
+        ["security", ["find-generic-password", "-s", "pi-scryer", "-a", "tavily-api-key"]],
+        ["security", ["add-generic-password", "-s", "pi-scryer", "-a", "tavily-api-key", "-w", key, "-U"]],
+        ["security", ["delete-generic-password", "-s", "pi-scryer", "-a", "tavily-api-key"]],
+      ]);
+    });
+
+    it("preserves Tavily non-macOS guards", async () => {
+      mockNonMacOS();
+      await expect(fetchKeychainKey("tavily")).resolves.toBeUndefined();
+      await expect(hasKeychainKey("tavily")).resolves.toBe(false);
+      await expect(storeKeychainKey("tavily", SECRET_KEY)).rejects.toThrow(
+        "credentials: Keychain is only available on macOS",
+      );
+      await expect(deleteKeychainKey("tavily")).resolves.toBeUndefined();
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+
+    it("preserves sanitized failures and idempotent Tavily deletion", async () => {
+      mockMacOS();
+      failWith(`raw detail ${SECRET_KEY}`);
+      await expect(fetchKeychainKey("tavily")).resolves.toBeUndefined();
+      await expect(hasKeychainKey("tavily")).resolves.toBe(false);
+      await expect(storeKeychainKey("tavily", SECRET_KEY)).rejects.toEqual(
+        new Error("credentials: failed to store key in Keychain"),
+      );
+      await expect(deleteKeychainKey("tavily")).rejects.toEqual(
+        new Error("credentials: failed to delete key from Keychain"),
+      );
+      failWith("The specified item could not be found in the keychain.");
+      await expect(deleteKeychainKey("tavily")).resolves.toBeUndefined();
+    });
+  });
+
+  describe.each(["darwin", "linux"] as const)("provider validation on %s", (platform) => {
+    it.each([
+      "unknown",
+      "exa-anon",
+      "tavily-anon",
+      "",
+      "EXA",
+      "toString",
+      "__proto__",
+      "exa; $(security)",
+    ])("rejects %j for every operation before invoking the OS", async (name) => {
+      vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      process.env.EXA_API_KEY = "exa-env";
+      process.env.TAVILY_API_KEY = "tavily-env";
+      const error = new Error("credentials: unsupported keyed provider");
+      await expect(fetchKeychainKey(name)).rejects.toEqual(error);
+      await expect(hasKeychainKey(name)).rejects.toEqual(error);
+      await expect(storeKeychainKey(name, SECRET_KEY)).rejects.toEqual(error);
+      await expect(deleteKeychainKey(name)).rejects.toEqual(error);
+      await expect(resolveProviderApiKey(name)).rejects.toEqual(error);
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("resolveExaApiKey", () => {
@@ -118,7 +256,7 @@ describe("credentials", () => {
       mockMacOS();
       succeedWith(SECRET_KEY);
 
-      await fetchKeychainKey();
+      await fetchKeychainKey("exa");
 
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
@@ -128,7 +266,7 @@ describe("credentials", () => {
 
     it("returns undefined without throwing on non-macOS", async () => {
       mockNonMacOS();
-      await expect(fetchKeychainKey()).resolves.toBeUndefined();
+      await expect(fetchKeychainKey("exa")).resolves.toBeUndefined();
       expect(execFileMock).not.toHaveBeenCalled();
     });
   });
@@ -138,7 +276,7 @@ describe("credentials", () => {
       mockMacOS();
       succeedWith(SECRET_KEY);
 
-      await expect(hasKeychainKey()).resolves.toBe(true);
+      await expect(hasKeychainKey("exa")).resolves.toBe(true);
 
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
@@ -149,12 +287,12 @@ describe("credentials", () => {
     it("reports false when missing", async () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
-      await expect(hasKeychainKey()).resolves.toBe(false);
+      await expect(hasKeychainKey("exa")).resolves.toBe(false);
     });
 
     it("reports false on non-macOS without invoking a subprocess", async () => {
       mockNonMacOS();
-      await expect(hasKeychainKey()).resolves.toBe(false);
+      await expect(hasKeychainKey("exa")).resolves.toBe(false);
       expect(execFileMock).not.toHaveBeenCalled();
     });
   });
@@ -164,7 +302,7 @@ describe("credentials", () => {
       mockMacOS();
       succeedWith("");
 
-      await storeKeychainKey(SECRET_KEY);
+      await storeKeychainKey("exa", SECRET_KEY);
 
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
@@ -185,9 +323,9 @@ describe("credentials", () => {
       mockMacOS();
       failWith(`raw failure containing ${SECRET_KEY}`);
 
-      await expect(storeKeychainKey(SECRET_KEY)).rejects.toThrow("credentials: failed to store key in Keychain");
+      await expect(storeKeychainKey("exa", SECRET_KEY)).rejects.toThrow("credentials: failed to store key in Keychain");
       try {
-        await storeKeychainKey(SECRET_KEY);
+        await storeKeychainKey("exa", SECRET_KEY);
       } catch (error) {
         expect(String(error)).not.toContain(SECRET_KEY);
       }
@@ -195,7 +333,9 @@ describe("credentials", () => {
 
     it("throws a fixed error on non-macOS", async () => {
       mockNonMacOS();
-      await expect(storeKeychainKey(SECRET_KEY)).rejects.toThrow("credentials: Keychain is only available on macOS");
+      await expect(storeKeychainKey("exa", SECRET_KEY)).rejects.toThrow(
+        "credentials: Keychain is only available on macOS",
+      );
       expect(execFileMock).not.toHaveBeenCalled();
     });
   });
@@ -205,7 +345,7 @@ describe("credentials", () => {
       mockMacOS();
       succeedWith("");
 
-      await deleteKeychainKey();
+      await deleteKeychainKey("exa");
 
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
@@ -217,16 +357,16 @@ describe("credentials", () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
 
-      await expect(deleteKeychainKey()).resolves.toBeUndefined();
+      await expect(deleteKeychainKey("exa")).resolves.toBeUndefined();
     });
 
     it("throws a fixed, sanitized error on other failures", async () => {
       mockMacOS();
       failWith("permission denied: raw internal detail");
 
-      await expect(deleteKeychainKey()).rejects.toThrow("credentials: failed to delete key from Keychain");
+      await expect(deleteKeychainKey("exa")).rejects.toThrow("credentials: failed to delete key from Keychain");
       try {
-        await deleteKeychainKey();
+        await deleteKeychainKey("exa");
       } catch (error) {
         expect(String(error)).not.toContain("permission denied: raw internal detail");
       }
@@ -234,7 +374,7 @@ describe("credentials", () => {
 
     it("is a no-op on non-macOS", async () => {
       mockNonMacOS();
-      await expect(deleteKeychainKey()).resolves.toBeUndefined();
+      await expect(deleteKeychainKey("exa")).resolves.toBeUndefined();
       expect(execFileMock).not.toHaveBeenCalled();
     });
   });
