@@ -28,6 +28,8 @@ interactive Pi TUI. A native dialog hides the entered key and stores it in the
 macOS Keychain under the fixed service `pi-scryer`, with provider-specific
 accounts `exa-api-key` and `tavily-api-key`. This is the recommended path:
 the key is stored securely by the OS, never in a project, session, or cache file.
+Storage uses `security add-generic-password -w`, passing the key as a command-line
+argument; it may be briefly visible to local process inspection.
 
 On headless macOS or any other platform, configure environment variables instead
 (for either or both providers):
@@ -51,8 +53,11 @@ Credential commands:
   the selected environment variable.
 - `/scryer status` — reports both Exa and Tavily credential sources:
   `Keychain`, `environment` (with the variable name), or `missing`, without
-  reading Keychain values or revealing keys. It does not check balance or route
-  health.
+  reading Keychain values or revealing keys. This is a presence hint, using
+  `security find-generic-password` without `-w`: it can report `Keychain` for an
+  existing item whose value is empty or inaccessible on read, even though the
+  resolver then falls back to the environment. It does not check balance or
+  route health.
 - Bare `/scryer` reports both sources and usage. The provider is **required**
   for login and logout: bare `/scryer login` or `/scryer logout` only shows
   usage; neither defaults to Exa. Anonymous and unknown provider names are
@@ -110,6 +115,11 @@ sanitized failure instead of returning partial content. Neither `/scryer status`
 nor a successful request reveals remaining free-tier balance: this extension
 cannot guarantee free-tier-only billing. Set provider-side spending caps or
 disable overages if a hard spending limit is required.
+
+**Privacy:** Search queries and non-GitHub read URLs are sent to the chosen
+hosted Exa or Tavily provider, including on anonymous routes. Fallback may send
+the same query or URL to multiple providers. Do not put secrets in queries or
+URLs. The GitHub isolation rules below remain unchanged.
 
 ## Tools
 
@@ -241,12 +251,16 @@ environment variables, and Keychain accounts. It drives credential commands
 resolver used by both keyed provider factories. The registry loads both factories
 lazily on the first hosted call.
 
-Vitest loads the fail-closed guards in `test/setup.ts` before modules under test:
-unexpected subprocess or network calls fail rather than invoking real external
-boundaries. `AGENTS.md` requires hermetic, noninteractive tests: no real OS
-prompts, Keychain or credential-store access, `osascript`, `security`, `gh`,
-`git`, or network calls. Mock external boundaries before loading source modules;
-use deterministic fixtures for prompts, login, and cancellation.
+Vitest loads the fail-closed guards in `test/setup.ts` before modules under test.
+Current enforcement covers `node:child_process`, `child_process`, and global
+`fetch`: unexpected calls through these boundaries fail rather than invoking
+real implementations. This is not a general OS or network sandbox.
+`AGENTS.md` requires hermetic, noninteractive tests across all external
+boundaries: no real OS prompts, Keychain or credential-store access, `osascript`,
+`security`, `gh`, `git`, or network calls. Adding another external boundary
+requires extending mocks and guards before tests exercise it. Mock boundaries
+before loading source modules; use deterministic fixtures for prompts, login,
+and cancellation.
 
 ```
 npm install
