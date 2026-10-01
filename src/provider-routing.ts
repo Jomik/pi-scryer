@@ -37,12 +37,25 @@ export interface RoutedResult<T> {
   mode: AccessMode;
 }
 
+/** A detached, primitive-only view of a route's current runtime availability. */
+export interface ProviderStatus {
+  readonly provider: string;
+  readonly mode: AccessMode;
+  readonly state: "eligible" | "cooling-down" | "disabled";
+  readonly disabledReason?: "quota" | "invalid-credentials";
+  readonly retryAt?: number;
+  readonly lastAttemptAt?: number;
+  readonly lastSuccessAt?: number;
+}
+
 interface RouteState {
   provider: ProviderName;
   mode: AccessMode;
   route: ProviderRoute;
   disabled?: "quota" | "invalid-credentials";
   retryAt: number;
+  lastAttemptAt?: number;
+  lastSuccessAt?: number;
 }
 
 const RATE_LIMIT_COOLDOWN_MS = 30_000;
@@ -113,8 +126,10 @@ export function createProviderRouter(providers: WebProvider[]) {
           continue;
         }
         try {
+          state.lastAttemptAt = Date.now();
           const value = await operation(state.route);
           abortIfRequested(signal);
+          state.lastSuccessAt = Date.now();
           const result = { value, provider: state.provider, mode: state.mode };
           if (!isEmpty(value)) {
             return result;
@@ -145,6 +160,21 @@ export function createProviderRouter(providers: WebProvider[]) {
   }
 
   return {
+    getStatus(): readonly ProviderStatus[] {
+      const now = Date.now();
+      return routes.map((route): ProviderStatus => {
+        const state = route.disabled ? "disabled" : now < route.retryAt ? "cooling-down" : "eligible";
+        return {
+          provider: route.provider,
+          mode: route.mode,
+          state,
+          ...(route.disabled !== undefined ? { disabledReason: route.disabled } : {}),
+          ...(state === "cooling-down" ? { retryAt: route.retryAt } : {}),
+          ...(route.lastAttemptAt !== undefined ? { lastAttemptAt: route.lastAttemptAt } : {}),
+          ...(route.lastSuccessAt !== undefined ? { lastSuccessAt: route.lastSuccessAt } : {}),
+        };
+      });
+    },
     search(query: string, signal?: AbortSignal): Promise<RoutedResult<SearchHit[]>> {
       return run(
         async (route) => {

@@ -23,6 +23,213 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("provider runtime status", () => {
+  it("returns fresh readonly primitive snapshots without invoking routes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const search = vi.fn<ProviderRoute["search"]>(async () => [hit]);
+    const read = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([{ name: "  third-provider  ", mode: "anonymous", ...route(search, read) }]);
+    const initial = router.getStatus();
+    expect(initial).toEqual([{ provider: "third-provider", mode: "anonymous", state: "eligible" }]);
+    const next = router.getStatus();
+    expect(next).not.toBe(initial);
+    expect(next[0]).not.toBe(initial[0]);
+    expect(search).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    // A caller bypassing readonly types can mutate only its own copies.
+    const mutable = initial as unknown as Array<{ provider: string; state: string }>;
+    mutable[0].provider = "changed";
+    mutable[0].state = "disabled";
+    mutable.length = 0;
+    expect(router.getStatus()).toEqual(next);
+    await router.search("secret query");
+    expect(router.getStatus()).toEqual([
+      {
+        provider: "third-provider",
+        mode: "anonymous",
+        state: "eligible",
+        lastAttemptAt: 100_000,
+        lastSuccessAt: 100_000,
+      },
+    ]);
+    vi.setSystemTime(101_000);
+    await router.read("https://secret.example");
+    expect(router.getStatus()).toEqual([
+      {
+        provider: "third-provider",
+        mode: "anonymous",
+        state: "eligible",
+        lastAttemptAt: 101_000,
+        lastSuccessAt: 101_000,
+      },
+    ]);
+    expect(next).toEqual([{ provider: "third-provider", mode: "anonymous", state: "eligible" }]);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the attempt before a pending operation and success at validated completion", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    let complete!: (hits: SearchHit[]) => void;
+    const router = createProviderRouter([
+      {
+        name: "exa",
+        mode: "keyed",
+        ...route(
+          () =>
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+        ),
+      },
+    ]);
+    const pending = router.search("q");
+    expect(router.getStatus()).toEqual([{ provider: "exa", mode: "keyed", state: "eligible", lastAttemptAt: 100_000 }]);
+    vi.setSystemTime(102_000);
+    complete([hit]);
+    await pending;
+    expect(router.getStatus()[0]).toEqual({
+      provider: "exa",
+      mode: "keyed",
+      state: "eligible",
+      lastAttemptAt: 100_000,
+      lastSuccessAt: 102_000,
+    });
+  });
+
+  it("records empty search success before fallback and leaves unused routes untouched", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const skipped = vi.fn<ProviderRoute["search"]>(async () => [hit]);
+    const router = createProviderRouter([
+      { name: "empty", mode: "anonymous", ...route(async () => []) },
+      { name: "useful", mode: "keyed", ...route() },
+      { name: "skipped", mode: "keyed", ...route(skipped) },
+    ]);
+    await expect(router.search("q")).resolves.toMatchObject({ provider: "useful" });
+    expect(router.getStatus()).toEqual([
+      { provider: "empty", mode: "anonymous", state: "eligible", lastAttemptAt: 100_000, lastSuccessAt: 100_000 },
+      { provider: "useful", mode: "keyed", state: "eligible", lastAttemptAt: 100_000, lastSuccessAt: 100_000 },
+      { provider: "skipped", mode: "keyed", state: "eligible" },
+    ]);
+    expect(skipped).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "transient",
+    "unexpected",
+    "malformed search",
+    "malformed read",
+  ])("does not record success for %s and retains the previous success", async (failure) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const search = vi.fn<ProviderRoute["search"]>().mockResolvedValue([hit]);
+    const read = vi.fn<ProviderRoute["read"]>().mockResolvedValue({ ...page, text: " " });
+    const router = createProviderRouter([{ name: "exa", mode: "keyed", ...route(search, read) }]);
+    if (failure === "transient") search.mockRejectedValueOnce(new ProviderError("transient"));
+    if (failure === "unexpected") search.mockRejectedValueOnce(new Error("secret raw error"));
+    if (failure === "malformed search") search.mockResolvedValueOnce([{ url: "file:///secret" }]);
+    const fail = () => (failure === "malformed read" ? router.read(page.url) : router.search("q"));
+    await expect(fail()).rejects.toThrow("Web providers unavailable");
+    expect(router.getStatus()).toEqual([{ provider: "exa", mode: "keyed", state: "eligible", lastAttemptAt: 100_000 }]);
+    vi.setSystemTime(101_000);
+    await router.search("q");
+    vi.setSystemTime(102_000);
+    if (failure === "transient") search.mockRejectedValueOnce(new ProviderError("transient"));
+    if (failure === "unexpected") search.mockRejectedValueOnce(new Error("secret raw error"));
+    if (failure === "malformed search") search.mockResolvedValueOnce([{ url: "file:///secret" }]);
+    await expect(fail()).rejects.toThrow("Web providers unavailable");
+    expect(router.getStatus()).toEqual([
+      { provider: "exa", mode: "keyed", state: "eligible", lastAttemptAt: 102_000, lastSuccessAt: 101_000 },
+    ]);
+  });
+
+  it.each([
+    "search",
+    "read",
+  ] as const)("does not mark cancelled %s results successful or attempt fallback", async (operation) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const controller = new AbortController();
+    const search = vi.fn<ProviderRoute["search"]>(async () => {
+      controller.abort();
+      return [hit];
+    });
+    const read = vi.fn<ProviderRoute["read"]>(async () => {
+      controller.abort();
+      return page;
+    });
+    const fallback = vi.fn<ProviderRoute["search"]>(async () => [hit]);
+    const router = createProviderRouter([
+      { name: "first", mode: "anonymous", ...route(search, read) },
+      { name: "fallback", mode: "keyed", ...route(fallback) },
+    ]);
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(router[operation]("input", cancelled.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(router.getStatus()).toEqual([
+      { provider: "first", mode: "anonymous", state: "eligible" },
+      { provider: "fallback", mode: "keyed", state: "eligible" },
+    ]);
+    await expect(router[operation]("input", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(router.getStatus()).toEqual([
+      { provider: "first", mode: "anonymous", state: "eligible", lastAttemptAt: 100_000 },
+      { provider: "fallback", mode: "keyed", state: "eligible" },
+    ]);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("derives cooldown expiry without requests and shares availability with read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const search = vi.fn<ProviderRoute["search"]>().mockRejectedValue(new ProviderError("rate-limit", 5_000));
+    const read = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([{ name: "exa", mode: "keyed", ...route(search, read) }]);
+    await expect(router.search("q")).rejects.toThrow("rate-limit");
+    const cooling = router.getStatus();
+    expect(cooling).toEqual([
+      { provider: "exa", mode: "keyed", state: "cooling-down", retryAt: 105_000, lastAttemptAt: 100_000 },
+    ]);
+    vi.setSystemTime(104_999);
+    await expect(router.read(page.url)).rejects.toThrow("no eligible routes");
+    expect(router.getStatus()).toEqual(cooling);
+    expect(read).not.toHaveBeenCalled();
+    vi.setSystemTime(105_000);
+    expect(router.getStatus()).toEqual([{ provider: "exa", mode: "keyed", state: "eligible", lastAttemptAt: 100_000 }]);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+    await router.read(page.url);
+    expect(router.getStatus()).toEqual([
+      { provider: "exa", mode: "keyed", state: "eligible", lastAttemptAt: 105_000, lastSuccessAt: 105_000 },
+    ]);
+    expect(cooling[0].state).toBe("cooling-down");
+  });
+
+  it.each([
+    "quota",
+    "invalid-credentials",
+  ] as const)("reports disabled reason %s and does not update skipped attempts", async (reason) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const search = vi.fn<ProviderRoute["search"]>().mockRejectedValue(new ProviderError(reason));
+    const read = vi.fn<ProviderRoute["read"]>(async () => page);
+    const router = createProviderRouter([{ name: "exa", mode: "keyed", ...route(search, read) }]);
+    await expect(router.search("q")).rejects.toThrow(reason);
+    const disabled = [
+      { provider: "exa", mode: "keyed", state: "disabled", disabledReason: reason, lastAttemptAt: 100_000 },
+    ];
+    expect(router.getStatus()).toEqual(disabled);
+    vi.setSystemTime(200_000);
+    await expect(router.read(page.url)).rejects.toThrow("no eligible routes");
+    expect(router.getStatus()).toEqual(disabled);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
 describe("provider routing", () => {
   it("routes search and read through a third provider with a normalized name", async () => {
     const router = createProviderRouter([{ name: "  third-provider  ", mode: "anonymous", ...route() }]);
