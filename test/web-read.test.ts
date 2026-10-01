@@ -873,9 +873,14 @@ describe("web_read GitHub routing", () => {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
     createdGitDirs.clear();
+    vi.restoreAllMocks();
   });
 
-  it("routes a repo root URL via mocked gh HTTPS clone, returning a local path and never calling Exa", async () => {
+  it("routes a repo root URL via mocked gh HTTPS clone without probing hosted credentials", async () => {
+    const credentials = await import("../src/credentials");
+    const resolveKey = vi.spyOn(credentials, "resolveProviderApiKey").mockImplementation(async (name) => {
+      throw new Error(`Unexpected credential probe: ${name}`);
+    });
     mockGitSuccess();
     const tool = getRegisteredTool("web_read");
     const fetchMock = vi.fn<typeof fetch>();
@@ -893,6 +898,7 @@ describe("web_read GitHub routing", () => {
     expect(result.content[0].text).toContain("Local path:");
     expect(result.content[0].text).not.toContain("Provider:");
     expect(result.details).not.toHaveProperty("provider");
+    expect(resolveKey).not.toHaveBeenCalled();
     expect(result.content[0].text).toContain("README.md");
     expect(gitCalls().some((call) => call[1].join(" ").includes("git@github.com"))).toBe(false);
   });

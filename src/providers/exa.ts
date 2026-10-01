@@ -1,4 +1,4 @@
-import { resolveExaApiKey } from "../credentials";
+import { resolveProviderApiKey } from "../credentials";
 import { ProviderError, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
 import {
   isHttpUrl,
@@ -36,9 +36,9 @@ export async function callExaApi(
   payload: unknown,
   signal: AbortSignal | undefined,
 ): Promise<unknown> {
-  const apiKey = await resolveExaApiKey();
+  const apiKey = await resolveProviderApiKey("exa");
   if (!isNonEmptyString(apiKey)) {
-    throw new Error(`${toolPrefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`);
+    throw new Error(`${toolPrefix}: missing EXA_API_KEY; run /scryer login exa (macOS) or set EXA_API_KEY`);
   }
 
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -115,7 +115,7 @@ function routeError(error: unknown, prefix: string, signal?: AbortSignal): never
   }
   if (
     error instanceof Error &&
-    error.message === `${prefix}: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY`
+    error.message === `${prefix}: missing EXA_API_KEY; run /scryer login exa (macOS) or set EXA_API_KEY`
   ) {
     throw new ProviderError("invalid-credentials");
   }
@@ -124,7 +124,7 @@ function routeError(error: unknown, prefix: string, signal?: AbortSignal): never
 
 /** Exposes the existing authenticated Exa transport only when a key is available. */
 export async function createExaProvider(): Promise<WebProvider | undefined> {
-  if (!isNonEmptyString(await resolveExaApiKey())) {
+  if (!isNonEmptyString(await resolveProviderApiKey("exa"))) {
     return undefined;
   }
   return {

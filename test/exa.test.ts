@@ -2,8 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/provider-routing";
 import { callExaApi, createExaProvider, fetchExaContent } from "../src/providers/exa";
 
-const resolveKey = vi.hoisted(() => vi.fn<() => Promise<string | undefined>>());
-vi.mock("../src/credentials", () => ({ resolveExaApiKey: resolveKey }));
+const resolveKey = vi.hoisted(() => vi.fn<(name: string) => Promise<string | undefined>>());
+vi.mock("../src/credentials", () => ({
+  resolveProviderApiKey: (name: string) => {
+    if (name !== "exa") throw new Error(`Unexpected credential provider: ${name}`);
+    return resolveKey(name);
+  },
+}));
 
 const url = "https://example.com/page";
 const secret = "private-exa-token";
@@ -31,7 +36,7 @@ describe("keyed Exa route", () => {
       search: expect.any(Function),
       read: expect.any(Function),
     });
-    expect(resolveKey).toHaveBeenCalledTimes(3);
+    expect(resolveKey.mock.calls).toEqual([["exa"], ["exa"], ["exa"]]);
   });
 
   it("uses the existing authenticated search payload and normalizes search results", async () => {
@@ -97,7 +102,7 @@ describe("keyed Exa route", () => {
     await expect(route?.read(url)).rejects.toEqual(new ProviderError(kind));
   });
 
-  it("maps a missing credential after route creation without changing the legacy error", async () => {
+  it("maps provider-specific missing-key guidance to invalid credentials after route creation", async () => {
     resolveKey.mockResolvedValueOnce(secret).mockResolvedValue(undefined);
     const route = await createExaProvider();
     await expect(route?.search("query")).rejects.toEqual(new ProviderError("invalid-credentials"));
@@ -168,10 +173,10 @@ describe("keyed Exa route", () => {
     await expect(route?.read(url)).rejects.toEqual(new ProviderError("transient"));
   });
 
-  it("leaves public legacy methods and their fixed errors unchanged", async () => {
+  it("uses provider-specific login guidance and preserves other fixed transport errors", async () => {
     resolveKey.mockResolvedValue(undefined);
     await expect(callExaApi("web_search", "https://api.exa.ai/search", {}, undefined)).rejects.toThrow(
-      "web_search: missing EXA_API_KEY; run /scryer login (macOS) or set EXA_API_KEY",
+      "web_search: missing EXA_API_KEY; run /scryer login exa (macOS) or set EXA_API_KEY",
     );
     resolveKey.mockResolvedValue(secret);
     mock({ error: secret }, 401);

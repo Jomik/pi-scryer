@@ -27,7 +27,10 @@ describe("extension registration", () => {
   });
 
   it("shares one lazy router load across hosted search and read", async () => {
-    const resolveKey = vi.spyOn(credentials, "resolveExaApiKey").mockResolvedValue(undefined);
+    const resolveKey = vi.spyOn(credentials, "resolveProviderApiKey").mockImplementation(async (name) => {
+      if (name !== "exa" && name !== "tavily") throw new Error(`Unexpected credential provider: ${name}`);
+      return undefined;
+    });
     vi.spyOn(Math, "random").mockReturnValue(0);
     vi.stubGlobal(
       "fetch",
@@ -49,7 +52,7 @@ describe("extension registration", () => {
       search?.execute("search", { query: "example" }, undefined, noop, {}),
       read?.execute("read", { url: "https://example.com/" }, undefined, noop, {}),
     ]);
-    expect(resolveKey).toHaveBeenCalledTimes(1);
+    expect(resolveKey.mock.calls).toEqual([["exa"], ["tavily"]]);
   });
 
   it("registers exactly one scryer command", () => {

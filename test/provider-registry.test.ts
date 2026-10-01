@@ -2,8 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProviderRouter } from "../src/provider-routing";
 import { createProviderRegistry } from "../src/providers/registry";
 
-const resolveKey = vi.hoisted(() => vi.fn<() => Promise<string | undefined>>());
-vi.mock("../src/credentials", () => ({ resolveExaApiKey: resolveKey }));
+const resolveKey = vi.hoisted(() => vi.fn<(name: string) => Promise<string | undefined>>());
+vi.mock("../src/credentials", () => ({ resolveProviderApiKey: resolveKey }));
+
+function resolveKeys(exa?: string, tavily?: string) {
+  resolveKey.mockImplementation(async (name) => {
+    if (name === "exa") return exa;
+    if (name === "tavily") return tavily;
+    throw new Error(`Unexpected credential provider: ${name}`);
+  });
+}
 
 const url = "https://example.com/page";
 const exaKey = "test-exa-key";
@@ -31,14 +39,13 @@ afterEach(() => {
 });
 
 describe("provider registry", () => {
-  it("loads Exa credentials lazily and returns only two direct anonymous providers without keys", async () => {
-    resolveKey.mockResolvedValue(undefined);
-    vi.stubEnv("TAVILY_API_KEY", "");
+  it("loads both credentials lazily and returns only two direct anonymous providers without keys", async () => {
+    resolveKeys();
     const loadProviders = createProviderRegistry();
     expect(resolveKey).not.toHaveBeenCalled();
 
     const providers = await loadProviders();
-    expect(resolveKey).toHaveBeenCalledTimes(1);
+    expect(resolveKey.mock.calls).toEqual([["exa"], ["tavily"]]);
     expect(providers.map(({ name, mode }) => ({ name, mode }))).toEqual([
       { name: "exa-anon", mode: "anonymous" },
       { name: "tavily-anon", mode: "anonymous" },
@@ -51,8 +58,7 @@ describe("provider registry", () => {
   });
 
   it("returns exactly four named direct providers with isolated search and read headers when both keys exist", async () => {
-    resolveKey.mockResolvedValue(exaKey);
-    vi.stubEnv("TAVILY_API_KEY", tavilyKey);
+    resolveKeys(exaKey, tavilyKey);
     const providers = await createProviderRegistry()();
     expect(providers.map(({ name, mode }) => ({ name, mode }))).toEqual([
       { name: "exa", mode: "keyed" },
@@ -92,35 +98,45 @@ describe("provider registry", () => {
     }
   });
 
-  it("captures Tavily's environment key at factory creation, not loading", async () => {
-    resolveKey.mockResolvedValue(undefined);
-    vi.stubEnv("TAVILY_API_KEY", "  activation-key  ");
+  it("defers both credential resolutions and provider requests until hosted loading and execution", async () => {
+    resolveKeys("activation-exa", "activation-tavily");
     const loadProviders = createProviderRegistry();
-    vi.stubEnv("TAVILY_API_KEY", "later-key");
-    const providers = await loadProviders();
-    const tavily = providers.find(({ name }) => name === "tavily");
-    expect(tavily).toBeDefined();
+    expect(resolveKey).not.toHaveBeenCalled();
+    resolveKeys(exaKey, tavilyKey);
     const fetchMock = vi.fn<typeof fetch>(async () => json({ results: [] }));
     vi.stubGlobal("fetch", fetchMock);
+    const providers = await loadProviders();
+    expect(resolveKey.mock.calls).toEqual([["exa"], ["tavily"]]);
+    expect(fetchMock).not.toHaveBeenCalled();
 
-    await tavily?.search("query");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("Authorization")).toBe("Bearer activation-key");
+    await providers.find(({ name }) => name === "exa")?.search("query");
+    await providers.find(({ name }) => name === "tavily")?.search("query");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("x-api-key")).toBe(exaKey);
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("Authorization")).toBe(`Bearer ${tavilyKey}`);
   });
 
-  it("resolves keyed Exa existence on each load without mutating earlier entries", async () => {
-    resolveKey.mockResolvedValueOnce(exaKey).mockResolvedValueOnce(undefined);
-    vi.stubEnv("TAVILY_API_KEY", "");
+  it.each([
+    [exaKey, undefined, ["exa", "exa-anon", "tavily-anon"]],
+    [undefined, tavilyKey, ["exa-anon", "tavily", "tavily-anon"]],
+  ] as const)("keeps stable flat order with only one keyed provider (%s, %s)", async (exa, tavily, names) => {
+    resolveKeys(exa, tavily);
+    const providers = await createProviderRegistry()();
+    expect(providers.map(({ name }) => name)).toEqual(names);
+  });
+
+  it("resolves keyed existence on each explicit load without mutating earlier entries", async () => {
+    resolveKeys(exaKey);
     const loadProviders = createProviderRegistry();
     const first = await loadProviders();
+    resolveKeys();
     const second = await loadProviders();
     expect(first.map(({ name }) => name)).toEqual(["exa", "exa-anon", "tavily-anon"]);
     expect(second.map(({ name }) => name)).toEqual(["exa-anon", "tavily-anon"]);
   });
 
   it("shares real-entry cooldown between search and read while keeping keyed entries independent", async () => {
-    resolveKey.mockResolvedValue(exaKey);
-    vi.stubEnv("TAVILY_API_KEY", tavilyKey);
+    resolveKeys(exaKey, tavilyKey);
     let now = 100_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     vi.spyOn(Math, "random").mockReturnValue(0);

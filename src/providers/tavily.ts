@@ -1,3 +1,4 @@
+import { resolveProviderApiKey } from "../credentials";
 import { ProviderError, retryAfterMs, type SearchHit, type WebProvider } from "../provider-routing";
 import type { ReadPage } from "../web-content";
 
@@ -103,8 +104,8 @@ function makeRoute(key?: string) {
   };
 }
 
-export function createTavilyProviders(): WebProvider[] {
-  const key = process.env.TAVILY_API_KEY?.trim();
+export async function createTavilyProviders(): Promise<WebProvider[]> {
+  const key = await resolveProviderApiKey("tavily");
   return [
     ...(key ? [{ name: "tavily", mode: "keyed" as const, ...makeRoute(key) }] : []),
     { name: "tavily-anon", mode: "anonymous", ...makeRoute() },

@@ -3,11 +3,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { CREDENTIAL_PROVIDERS, type CredentialProvider, getCredentialProvider } from "./providers/credential-providers";
 
 const KEYCHAIN_SERVICE = "pi-scryer";
-const KEYCHAIN_ACCOUNT = getCredentialProvider("exa").keychainAccount;
 const COMMAND_USAGE = `/scryer login <keyed-provider> | logout <keyed-provider> | status (keyed providers: ${CREDENTIAL_PROVIDERS.map((provider) => provider.name).join(", ")})`;
 const RESTART_NOTICE = "Restart Pi to refresh the cached provider registry.";
 
-export { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE };
+export { KEYCHAIN_SERVICE };
 
 type SubprocessError = Error & { stdout?: string; stderr?: string };
 
@@ -188,11 +187,6 @@ export async function resolveProviderApiKey(name: string): Promise<string | unde
   }
   const envKey = process.env[provider.envVariable]?.trim();
   return envKey && envKey.length > 0 ? envKey : undefined;
-}
-
-/** Temporary Exa compatibility wrapper until callers migrate to provider credentials. */
-export async function resolveExaApiKey(): Promise<string | undefined> {
-  return resolveProviderApiKey("exa");
 }
 
 function hasEnvKey(provider: CredentialProvider): boolean {

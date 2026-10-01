@@ -5,9 +5,8 @@ import { createTavilyProviders } from "./tavily";
 
 export function createProviderRegistry(): () => Promise<WebProvider[]> {
   const exaAnon = createExaAnonProvider();
-  const tavily = createTavilyProviders();
   return async () => {
-    const exa = await createExaProvider();
+    const [exa, tavily] = await Promise.all([createExaProvider(), createTavilyProviders()]);
     return [...(exa ? [exa] : []), exaAnon, ...tavily];
   };
 }

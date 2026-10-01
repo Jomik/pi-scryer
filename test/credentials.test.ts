@@ -3,10 +3,8 @@ import {
   deleteKeychainKey,
   fetchKeychainKey,
   hasKeychainKey,
-  KEYCHAIN_ACCOUNT,
   KEYCHAIN_SERVICE,
   promptForApiKey,
-  resolveExaApiKey,
   resolveProviderApiKey,
   scryerCommandHandler,
   storeKeychainKey,
@@ -200,13 +198,13 @@ describe("credentials", () => {
     });
   });
 
-  describe("resolveExaApiKey", () => {
+  describe("resolveProviderApiKey (exa)", () => {
     it("prefers the trimmed Keychain value over env on macOS", async () => {
       mockMacOS();
       succeedWith(`  ${SECRET_KEY}  \n`);
       process.env.EXA_API_KEY = "env-key";
 
-      await expect(resolveExaApiKey()).resolves.toBe(SECRET_KEY);
+      await expect(resolveProviderApiKey("exa")).resolves.toBe(SECRET_KEY);
     });
 
     it("falls back to env when the Keychain item is missing", async () => {
@@ -214,7 +212,7 @@ describe("credentials", () => {
       failWith("The specified item could not be found in the keychain.");
       process.env.EXA_API_KEY = "env-key";
 
-      await expect(resolveExaApiKey()).resolves.toBe("env-key");
+      await expect(resolveProviderApiKey("exa")).resolves.toBe("env-key");
     });
 
     it("falls back to env on Keychain access errors, without leaking raw error text", async () => {
@@ -222,21 +220,21 @@ describe("credentials", () => {
       failWith("security: SecKeychainItemCopyContent: The user name or passphrase you entered is not correct.");
       process.env.EXA_API_KEY = "env-key";
 
-      await expect(resolveExaApiKey()).resolves.toBe("env-key");
+      await expect(resolveProviderApiKey("exa")).resolves.toBe("env-key");
     });
 
     it("returns undefined when both Keychain and env are unavailable", async () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
 
-      await expect(resolveExaApiKey()).resolves.toBeUndefined();
+      await expect(resolveProviderApiKey("exa")).resolves.toBeUndefined();
     });
 
     it("never invokes execFile on non-macOS platforms, using env only", async () => {
       mockNonMacOS();
       process.env.EXA_API_KEY = "env-key";
 
-      await expect(resolveExaApiKey()).resolves.toBe("env-key");
+      await expect(resolveProviderApiKey("exa")).resolves.toBe("env-key");
       expect(execFileMock).not.toHaveBeenCalled();
     });
 
@@ -245,7 +243,7 @@ describe("credentials", () => {
       succeedWith("   \n");
       process.env.EXA_API_KEY = "   ";
 
-      await expect(resolveExaApiKey()).resolves.toBeUndefined();
+      await expect(resolveProviderApiKey("exa")).resolves.toBeUndefined();
     });
   });
 
@@ -259,7 +257,7 @@ describe("credentials", () => {
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
       expect(file).toBe("security");
-      expect(args).toEqual(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT, "-w"]);
+      expect(args).toEqual(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "exa-api-key", "-w"]);
     });
 
     it("returns undefined without throwing on non-macOS", async () => {
@@ -279,7 +277,7 @@ describe("credentials", () => {
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
       expect(file).toBe("security");
-      expect(args).toEqual(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT]);
+      expect(args).toEqual(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "exa-api-key"]);
     });
 
     it("reports false when missing", async () => {
@@ -310,7 +308,7 @@ describe("credentials", () => {
         "-s",
         KEYCHAIN_SERVICE,
         "-a",
-        KEYCHAIN_ACCOUNT,
+        "exa-api-key",
         "-w",
         SECRET_KEY,
         "-U",
@@ -348,7 +346,7 @@ describe("credentials", () => {
       expect(execFileMock).toHaveBeenCalledTimes(1);
       const [file, args] = execFileMock.mock.calls[0];
       expect(file).toBe("security");
-      expect(args).toEqual(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT]);
+      expect(args).toEqual(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "exa-api-key"]);
     });
 
     it("is idempotent when the item is already missing", async () => {
