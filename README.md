@@ -56,10 +56,12 @@ Credential commands:
   reading Keychain values or revealing keys. This is a presence hint, using
   `security find-generic-password` without `-w`: it can report `Keychain` for an
   existing item whose value is empty or inaccessible on read, even though the
-  resolver then falls back to the environment. It does not check balance or
-  route health.
-- Bare `/scryer` reports both sources and usage. The provider is **required**
-  for login and logout: bare `/scryer login` or `/scryer logout` only shows
+  resolver then falls back to the environment. It also peeks at an already
+  initialized router's runtime status (see below), without initializing it or
+  probing providers. It does not check live health, quota, or balance; the
+  existing Keychain presence checks still run on macOS.
+- Bare `/scryer` reports both sources, runtime status, and usage. The provider is
+  **required** for login and logout: bare `/scryer login` or `/scryer logout` only shows
   usage; neither defaults to Exa. Anonymous and unknown provider names are
   rejected.
 - Autocomplete offers only the subcommands `login`, `logout`, `status` and,
@@ -78,7 +80,41 @@ eagerly at activation. The resulting provider registry is cached for the Pi
 process. GitHub-only reads do not load it or probe Exa/Tavily credentials.
 Credential changes (including login and logout) require restarting Pi to refresh
 active routes; successful login/logout notices include this reminder. Restarting
-also resets route availability.
+also resets route availability. Live credential-source hints can therefore
+differ from the cached provider entries until restart.
+
+### Runtime status
+
+`/scryer status` and bare `/scryer` show each loaded provider's local availability:
+
+- `eligible` — can be retried under the router's local rules, not measured live
+  health, quota, or balance.
+- `cooling down · retry in Ns` — rate-limited, with remaining retry seconds.
+- `disabled · quota exhausted` or `disabled · invalid credentials` — disabled
+  until restart.
+
+Each loaded provider also shows `last attempt` and `last success` as relative
+ages in seconds (`Ns ago`), or `never`. A valid empty search counts as a
+successful response even if routing continues to look for matches. Registered
+keyed providers omitted when the registry initialized show `not configured`.
+If the router has not initialized, or its load is still pending, status shows
+`scryer: runtime not initialized`; it neither starts nor waits for that load.
+
+Example output after initialization (sources, routes, and ages vary):
+
+```text
+scryer: Exa API key source: missing
+scryer: Tavily API key source: missing
+scryer: Exa-anon (anonymous): cooling down · retry in 8s · last attempt: 2s ago · last success: never
+scryer: Tavily-anon (anonymous): eligible · last attempt: 2s ago · last success: 2s ago
+scryer: Exa (keyed): not configured
+scryer: Tavily (keyed): not configured
+```
+
+Runtime timestamps and availability belong only to the current process. The
+snapshot contains no queries, URLs, keys, or raw error history, and is not
+persisted to disk. Reading status does not resolve credential values, reload
+providers, or make API requests; it retains the source-presence checks above.
 
 ## Provider routing
 
@@ -242,7 +278,10 @@ Tavily's keyed and anonymous providers share the same REST code. In
 `src/provider-routing.ts`, `WebProvider` extends `ProviderRoute` (`search` and
 `read`) with `name: string` and `mode: "anonymous" | "keyed"`. Shared content
 types and helpers live in `src/web-content.ts`. The router alone chooses the
-provider; neither tool exposes a provider argument to the agent.
+provider; neither tool exposes a provider argument to the agent. Its `getStatus()`
+returns a detached, readonly snapshot of local route state. `src/index.ts` passes
+credential commands a synchronous peek at the resolved router only, keeping
+status separate from the lazy loader.
 
 The single static credential metadata list in
 `src/providers/credential-providers.ts` defines registered keyed names,
