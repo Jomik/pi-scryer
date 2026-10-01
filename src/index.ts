@@ -19,10 +19,15 @@ export default function activate(api: ExtensionAPI): void {
   const loadProviders = createProviderRegistry();
   // Resolve credentials only when a hosted search or read runs.
   let routerPromise: Promise<ReturnType<typeof createProviderRouter>> | undefined;
-  const getRouter = () => (routerPromise ??= loadProviders().then(createProviderRouter));
+  let resolvedRouter: ReturnType<typeof createProviderRouter> | undefined;
+  const getRouter = () =>
+    (routerPromise ??= loadProviders().then((providers) => {
+      resolvedRouter = createProviderRouter(providers);
+      return resolvedRouter;
+    }));
 
   api.registerTool(createWebReadTool(cache, githubReader, getRouter));
   api.registerTool(createWebSearchTool(getRouter));
 
-  registerScryerCommand(api);
+  registerScryerCommand(api, () => resolvedRouter?.getStatus());
 }

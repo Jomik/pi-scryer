@@ -9,6 +9,7 @@ import {
   scryerCommandHandler,
   storeKeychainKey,
 } from "../src/credentials";
+import type { ProviderStatus } from "../src/provider-routing";
 import { CREDENTIAL_PROVIDERS } from "../src/providers/credential-providers";
 // setupFiles installs this mock before the credentials module is imported.
 // mockReset restores its throwing/tracked baseline, never an empty function.
@@ -445,7 +446,11 @@ function allNotifyMessages(ctx: FakeCommandCtx): string[] {
  * shape; behavior tests only need `ui`, `mode`, and `hasUI`, matching the
  * shared harness's fake context.
  */
-const handler = scryerCommandHandler as unknown as (args: string, ctx: FakeCommandCtx) => Promise<void>;
+const handler = scryerCommandHandler as unknown as (
+  args: string,
+  ctx: FakeCommandCtx,
+  peekRuntimeStatus?: () => readonly ProviderStatus[] | undefined,
+) => Promise<void>;
 
 const USAGE = "/scryer login <keyed-provider> | logout <keyed-provider> | status (keyed providers: exa, tavily)";
 const RESTART = "Restart Pi to refresh the cached provider registry.";
@@ -472,6 +477,7 @@ describe("scryer command", () => {
     expect(allNotifyMessages(ctx)).toEqual([
       "scryer: Exa API key source: missing",
       "scryer: Tavily API key source: missing",
+      "scryer: runtime not initialized",
       USAGE,
     ]);
     expect(execFileMock).not.toHaveBeenCalled();
@@ -485,6 +491,7 @@ describe("scryer command", () => {
     expect(allNotifyMessages(ctx)).toEqual([
       "scryer: Exa API key source: Keychain",
       "scryer: Tavily API key source: Keychain",
+      "scryer: runtime not initialized",
     ]);
     expect(execFileMock.mock.calls.map(([file, args]) => [file, args])).toEqual([
       ["security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "exa-api-key"]],
@@ -505,6 +512,7 @@ describe("scryer command", () => {
     expect(allNotifyMessages(ctx)).toEqual([
       "scryer: Exa API key source: environment (EXA_API_KEY)",
       "scryer: Tavily API key source: Keychain",
+      "scryer: runtime not initialized",
     ]);
     failWith(`denied ${SECRET_KEY}`);
     delete process.env.EXA_API_KEY;
@@ -514,7 +522,81 @@ describe("scryer command", () => {
     expect(allNotifyMessages(ctx)).toEqual([
       "scryer: Exa API key source: missing",
       "scryer: Tavily API key source: missing",
+      "scryer: runtime not initialized",
     ]);
+  });
+
+  it("formats detached runtime snapshots with generic labels, ages, and missing keyed routes", async () => {
+    mockNonMacOS();
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    process.env.TAVILY_API_KEY = SECRET_KEY;
+    const statuses: readonly ProviderStatus[] = Object.freeze([
+      Object.freeze({ provider: "exa", mode: "keyed", state: "eligible" }),
+      Object.freeze({
+        provider: "future\nprovider",
+        mode: "anonymous",
+        state: "cooling-down",
+        retryAt: 101_001,
+        lastAttemptAt: 98_001,
+        lastSuccessAt: 90_000,
+      }),
+      Object.freeze({ provider: "expired", mode: "anonymous", state: "cooling-down", retryAt: 100_000 }),
+      Object.freeze({ provider: "quota-provider", mode: "anonymous", state: "disabled", disabledReason: "quota" }),
+      Object.freeze({
+        provider: "invalid-provider",
+        mode: "keyed",
+        state: "disabled",
+        disabledReason: "invalid-credentials",
+        lastAttemptAt: 0,
+      }),
+      Object.freeze({ provider: "tavily", mode: "anonymous", state: "eligible" }),
+    ] as const);
+    const before = JSON.stringify(statuses);
+    const peek = vi.fn(() => statuses);
+    const ctx = createCtx();
+    await handler("status", ctx, peek);
+    expect(allNotifyMessages(ctx)).toEqual([
+      "scryer: Exa API key source: missing",
+      "scryer: Tavily API key source: environment (TAVILY_API_KEY)",
+      "scryer: Exa (keyed): eligible · last attempt: never · last success: never",
+      "scryer: Future provider (anonymous): cooling down · retry in 2s · last attempt: 1s ago · last success: 10s ago",
+      "scryer: Expired (anonymous): eligible · last attempt: never · last success: never",
+      "scryer: Quota-provider (anonymous): disabled · quota exhausted · last attempt: never · last success: never",
+      "scryer: Invalid-provider (keyed): disabled · invalid credentials · last attempt: 100s ago · last success: never",
+      "scryer: Tavily (anonymous): eligible · last attempt: never · last success: never",
+      "scryer: Tavily (keyed): not configured",
+    ]);
+    expect(peek).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(statuses)).toBe(before);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes an empty initialized snapshot from an unresolved runtime", async () => {
+    mockNonMacOS();
+    const ctx = createCtx();
+    await handler("status", ctx, () => []);
+    expect(allNotifyMessages(ctx).slice(2)).toEqual([
+      "scryer: Exa (keyed): not configured",
+      "scryer: Tavily (keyed): not configured",
+    ]);
+  });
+
+  it("peeks only for status and empty args, never login, logout, or invalid args", async () => {
+    mockNonMacOS();
+    const peek = vi.fn(() => undefined);
+    const ctx = createCtx();
+    for (const args of ["login exa", "logout tavily", "bogus", "status exa"]) {
+      await handler(args, ctx, peek);
+    }
+    expect(peek).not.toHaveBeenCalled();
+    for (const args of ["status", ""]) {
+      ctx.ui.notify.mockClear();
+      await handler(args, ctx, peek);
+      expect(allNotifyMessages(ctx)).toContain("scryer: runtime not initialized");
+      expect(allNotifyMessages(ctx).join("\n")).not.toMatch(/eligible|not configured|cooling down|disabled/);
+    }
+    expect(peek).toHaveBeenCalledTimes(2);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 
   describe.each(CREDENTIAL_PROVIDERS)("$name commands", (provider) => {

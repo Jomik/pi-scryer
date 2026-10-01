@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { providerLabel } from "./provider-label";
+import type { ProviderStatus } from "./provider-routing";
 import { CREDENTIAL_PROVIDERS, type CredentialProvider, getCredentialProvider } from "./providers/credential-providers";
 
 const KEYCHAIN_SERVICE = "pi-scryer";
@@ -193,8 +195,10 @@ function hasEnvKey(provider: CredentialProvider): boolean {
   return Boolean(process.env[provider.envVariable]?.trim());
 }
 
-/** Reports every registered credential source without reading Keychain values. */
-async function reportStatus(ctx: ExtensionCommandContext): Promise<void> {
+type PeekRuntimeStatus = () => readonly ProviderStatus[] | undefined;
+
+/** Reports source presence separately from initialized runtime availability. */
+async function reportStatus(ctx: ExtensionCommandContext, peekRuntimeStatus?: PeekRuntimeStatus): Promise<void> {
   for (const provider of CREDENTIAL_PROVIDERS) {
     const source = (await hasKeychainKey(provider.name))
       ? "Keychain"
@@ -202,6 +206,32 @@ async function reportStatus(ctx: ExtensionCommandContext): Promise<void> {
         ? `environment (${provider.envVariable})`
         : "missing";
     ctx.ui.notify(`scryer: ${provider.displayName} API key source: ${source}`, "info");
+  }
+
+  const statuses = peekRuntimeStatus?.();
+  if (statuses === undefined) {
+    ctx.ui.notify("scryer: runtime not initialized", "info");
+    return;
+  }
+  const now = Date.now();
+  const age = (timestamp: number | undefined) =>
+    timestamp === undefined ? "never" : `${Math.max(0, Math.floor((now - timestamp) / 1000))}s ago`;
+  for (const status of statuses) {
+    const availability =
+      status.state === "disabled"
+        ? `disabled · ${status.disabledReason === "quota" ? "quota exhausted" : "invalid credentials"}`
+        : status.state === "cooling-down" && status.retryAt !== undefined && status.retryAt > now
+          ? `cooling down · retry in ${Math.ceil((status.retryAt - now) / 1000)}s`
+          : "eligible";
+    ctx.ui.notify(
+      `scryer: ${providerLabel(status.provider)} (${status.mode}): ${availability} · last attempt: ${age(status.lastAttemptAt)} · last success: ${age(status.lastSuccessAt)}`,
+      "info",
+    );
+  }
+  for (const provider of CREDENTIAL_PROVIDERS) {
+    if (!statuses.some((status) => status.provider === provider.name && status.mode === "keyed")) {
+      ctx.ui.notify(`scryer: ${providerLabel(provider.name)} (keyed): not configured`, "info");
+    }
   }
 }
 
@@ -268,15 +298,19 @@ async function handleLogout(provider: CredentialProvider, ctx: ExtensionCommandC
 }
 
 /** Validates all arguments before prompting or invoking Keychain operations. */
-export async function scryerCommandHandler(args: string, ctx: ExtensionCommandContext): Promise<void> {
+export async function scryerCommandHandler(
+  args: string,
+  ctx: ExtensionCommandContext,
+  peekRuntimeStatus?: PeekRuntimeStatus,
+): Promise<void> {
   const trimmed = args.trim();
   if (trimmed.length === 0) {
-    await reportStatus(ctx);
+    await reportStatus(ctx, peekRuntimeStatus);
     ctx.ui.notify(COMMAND_USAGE, "info");
     return;
   }
   if (trimmed === "status") {
-    await reportStatus(ctx);
+    await reportStatus(ctx, peekRuntimeStatus);
     return;
   }
 
@@ -295,7 +329,7 @@ export async function scryerCommandHandler(args: string, ctx: ExtensionCommandCo
   ctx.ui.notify(COMMAND_USAGE, "warning");
 }
 
-export function registerScryerCommand(api: ExtensionAPI): void {
+export function registerScryerCommand(api: ExtensionAPI, peekRuntimeStatus?: PeekRuntimeStatus): void {
   api.registerCommand("scryer", {
     description: "Manage provider API keys used by pi-scryer (status, login <provider>, logout <provider>)",
     getArgumentCompletions: (prefix) => {
@@ -311,6 +345,6 @@ export function registerScryerCommand(api: ExtensionAPI): void {
       }
       return values.length > 0 ? values.map((value) => ({ value, label: value })) : null;
     },
-    handler: scryerCommandHandler,
+    handler: (args, ctx) => scryerCommandHandler(args, ctx, peekRuntimeStatus),
   });
 }
