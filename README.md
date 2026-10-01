@@ -1,7 +1,7 @@
 # pi-scryer
 
-Minimal Exa web access for [pi](https://github.com/earendil-works/pi). Provides
-`web_read` and `web_search`.
+Exa and Tavily web access for [pi](https://github.com/earendil-works/pi). Provides
+`web_read` and `web_search` with keyed and anonymous provider routes.
 
 ## Installation
 
@@ -19,33 +19,143 @@ pi -e npm:pi-scryer
 
 ## Configuration
 
-Requires an Exa API key.
+No API key is required: Exa's hosted MCP search/fetch and Tavily's keyless
+REST search/extract provide anonymous, rate-limited access. Optional keys enable
+keyed routes: Exa REST and Tavily REST.
 
-On macOS, run `/scryer login` in an interactive session to store the key in
-the macOS Keychain (fixed service `pi-scryer`, account `exa-api-key`). This
-is the recommended path: the key is stored securely by the OS and is never
-written to any project, session, or cache file.
+On macOS, run `/scryer login exa` or `/scryer login tavily` in the
+interactive Pi TUI. A native dialog hides the entered key and stores it in the
+macOS Keychain under the fixed service `pi-scryer`, with provider-specific
+accounts `exa-api-key` and `tavily-api-key`. This is the recommended path:
+the key is stored securely by the OS, never in a project, session, or cache file.
+Storage uses `security add-generic-password -w`, passing the key as a command-line
+argument; it may be briefly visible to local process inspection.
 
-On headless macOS or any other platform, set the environment variable
-instead:
+On headless macOS or any other platform, configure environment variables instead
+(for either or both providers):
 
 ```
 export EXA_API_KEY=...
+export TAVILY_API_KEY=...
 ```
 
-Other `/scryer` subcommands:
+Login outside the interactive macOS TUI gives guidance to set the selected
+provider's environment variable rather than opening a prompt.
 
-- `/scryer status` — reports which source will supply the key (`Keychain`,
-  `environment`, or `missing`) without reading or revealing its value.
-- `/scryer logout` — removes the Keychain item (macOS only, idempotent).
-  Does not touch the `EXA_API_KEY` environment variable; if it is still set,
-  it remains available as a fallback.
+Credential commands:
 
-Precedence: on macOS, the Keychain is checked first; if it is missing,
-empty, or inaccessible, the trimmed `EXA_API_KEY` environment variable is
-used instead. On non-macOS platforms, only the environment variable is
-consulted. The key itself is never shown in any notification, and never
-stored or cached in any project, session, or cache file.
+- `/scryer login exa` or `/scryer login tavily` — stores the selected
+  provider's key in Keychain.
+- `/scryer logout exa` or `/scryer logout tavily` — removes only the
+  selected Keychain account (macOS only, idempotent). It never changes either
+  environment variable or the other provider's account; a configured environment
+  fallback remains available. On non-macOS platforms, it gives guidance to unset
+  the selected environment variable.
+- `/scryer status` — reports both Exa and Tavily credential sources:
+  `Keychain`, `environment` (with the variable name), or `missing`, without
+  reading Keychain values or revealing keys. This is a presence hint, using
+  `security find-generic-password` without `-w`: it can report `Keychain` for an
+  existing item whose value is empty or inaccessible on read, even though the
+  resolver then falls back to the environment. It also peeks at an already
+  initialized router's runtime status (see below), without initializing it or
+  probing providers. It does not check live health, quota, or balance; the
+  existing Keychain presence checks still run on macOS.
+- Bare `/scryer` reports both sources, runtime status, and usage. The provider is
+  **required** for login and logout: bare `/scryer login` or `/scryer logout` only shows
+  usage; neither defaults to Exa. Anonymous and unknown provider names are
+  rejected.
+- Autocomplete offers only the subcommands `login`, `logout`, `status` and,
+  after login/logout, registered keyed provider names (`exa`, `tavily`).
+
+Precedence for each provider: on macOS, Keychain is checked first; if it is
+missing, empty, or inaccessible, the trimmed `EXA_API_KEY` or `TAVILY_API_KEY`
+environment variable is used instead. On non-macOS platforms, only the
+environment is consulted. Keys are never shown in notifications or stored or
+cached in any project, session, or cache file. Anonymous requests never send a
+configured API key.
+
+Both keyed provider factories resolve credentials lazily on the first hosted
+search or read, not at extension activation; Tavily no longer captures its key
+eagerly at activation. The resulting provider registry is cached for the Pi
+process. GitHub-only reads do not load it or probe Exa/Tavily credentials.
+Credential changes (including login and logout) require restarting Pi to refresh
+active routes; successful login/logout notices include this reminder. Restarting
+also resets route availability. Live credential-source hints can therefore
+differ from the cached provider entries until restart.
+
+### Runtime status
+
+`/scryer status` and bare `/scryer` show each loaded provider's local availability:
+
+- `eligible` — can be retried under the router's local rules, not measured live
+  health, quota, or balance.
+- `cooling down · retry in Ns` — rate-limited, with remaining retry seconds.
+- `disabled · quota exhausted` or `disabled · invalid credentials` — disabled
+  until restart.
+
+Each loaded provider also shows `last attempt` and `last success` as relative
+ages in seconds (`Ns ago`), or `never`. A valid empty search counts as a
+successful response even if routing continues to look for matches. Registered
+keyed providers omitted when the registry initialized show `not configured`.
+If the router has not initialized, or its load is still pending, status shows
+`scryer: runtime not initialized`; it neither starts nor waits for that load.
+
+Example output after initialization (sources, routes, and ages vary):
+
+```text
+scryer: Exa API key source: missing
+scryer: Tavily API key source: missing
+scryer: Exa-anon (anonymous): cooling down · retry in 8s · last attempt: 2s ago · last success: never
+scryer: Tavily-anon (anonymous): eligible · last attempt: 2s ago · last success: 2s ago
+scryer: Exa (keyed): not configured
+scryer: Tavily (keyed): not configured
+```
+
+Runtime timestamps and availability belong only to the current process. The
+snapshot contains no queries, URLs, keys, or raw error history, and is not
+persisted to disk. Reading status does not resolve credential values, reload
+providers, or make API requests; it retains the source-presence checks above.
+
+## Provider routing
+
+Four standalone providers are tracked independently:
+
+- `exa` — keyed Exa REST.
+- `exa-anon` — anonymous Exa MCP.
+- `tavily` — keyed Tavily REST.
+- `tavily-anon` — keyless Tavily REST (anonymous).
+
+Each provider is one route. Each fresh `web_search` or non-GitHub `web_read`
+randomly starts with one eligible anonymous route, then tries the other eligible
+anonymous route if needed. Only if neither
+returns a usable result does it randomly start with an eligible configured
+keyed route, then try the other eligible keyed route if needed. Routes without
+a configured key, disabled routes, and rate-limited routes still waiting for
+their retry time are omitted. Attempts are sequential, not parallel queries.
+Successful output identifies the provider and access mode as `Exa (keyed)`,
+`Exa-anon (anonymous)`, `Tavily (keyed)`, or `Tavily-anon (anonymous)`;
+`web_read` continuation chunks retain the original provider and mode. Empty
+search results may prompt another route; if all routes return no matches, the result
+is "No search results found."
+
+Quota exhaustion or invalid credentials disable only the affected route until
+process restart. Rate limits skip a route until its next eligible time, using
+a valid positive HTTP `Retry-After` delay when present; for Tavily keyless
+responses, `retry_after_seconds` in the error body is used if the header is
+absent or invalid. Otherwise the cooldown is 30 seconds. Each route's next
+eligible time is held in process memory; there is no balance API check or
+persistent quota tracking. Other transient failures fall through to the next route for
+that request and can be retried on a later request; a failed route is not
+retried within the same request. If no route succeeds, the tool reports a
+sanitized failure instead of returning partial content. Neither `/scryer status`
+nor a successful request reveals remaining free-tier balance: this extension
+cannot guarantee free-tier-only billing. Set provider-side spending caps or
+disable overages if a hard spending limit is required.
+
+**Privacy:** Search queries and non-GitHub read URLs are sent to the chosen
+hosted Exa or Tavily provider, including on anonymous routes. Fallback may send
+the same query or URL to multiple providers. Do not put secrets in queries or
+URLs. The GitHub isolation rules below remain unchanged.
 
 ## Tools
 
@@ -58,11 +168,13 @@ source and extracted text; the title is included only when available.
 - Fixed 30s timeout.
 - Output limited to 50KB or 2000 lines per call, whichever is hit first.
 - **GitHub code URLs:** repo root, `/tree/<ref>[/path]`, `/blob/<ref>/path`,
-  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com`, plus
-  `raw.githubusercontent.com/OWNER/REPO/<ref>/path`, are read directly by
-  shallow-cloning the repository over HTTPS via the `gh` CLI (`gh repo clone
-  https://github.com/owner/repo.git`) instead of going through Exa — content
-  is never sent to Exa for these URLs. `github.com/OWNER/REPO/raw/<ref>/path`
+  `/commit/<sha>`, and `/raw/<ref>/path` URLs on `github.com` (also
+  `www.github.com`) and `raw.githubusercontent.com/OWNER/REPO/<ref>/path`
+  are read directly by shallow-cloning the repository over HTTPS via the `gh`
+  CLI (`gh repo clone
+  https://github.com/owner/repo.git`) instead of going through a hosted
+  provider — content is never sent to Exa or Tavily for these URLs.
+  `github.com/OWNER/REPO/raw/<ref>/path`
   and `raw.githubusercontent.com/OWNER/REPO/<ref>/path` are resolved and read
   identically to `/blob/<ref>/path` (single-file content, not a directory
   listing). This requires `gh` to be installed and
@@ -90,32 +202,35 @@ source and extracted text; the title is included only when available.
   bytes before `offset` chunking; use the returned local path to read larger
   files.
   If cloning, authentication, or the git fetch fails for a recognized GitHub
-  code URL, `web_read` throws — it never falls back to Exa
-  for these URLs.
+  code URL, `web_read` throws — it never falls back to Exa or Tavily for
+  these URLs.
 - **GitHub issue/pull request URLs:** `github.com/OWNER/REPO/issues/<n>` and
   `github.com/OWNER/REPO/pull/<n>` (also `www.github.com`; exactly these 4
   path segments, an optional trailing slash or query string is fine, `<n>` a
   positive decimal integer) are read directly via the authenticated `gh` CLI
   (`gh issue view`/`gh pr view --repo OWNER/REPO --json
-  title,body,comments,url`) — no clone, no temporary directory, and no Exa
-  call is ever made for these URLs. Only the issue/PR's title, body, and
-  general (top-level) comments are included; inline pull request review
+  title,body,comments,url`) — no clone, no temporary directory, and no call
+  to Exa or Tavily is ever made for these URLs. Only the issue/PR's title,
+  body, and general (top-level) comments are included; inline pull request review
   comment threads on the diff are not fetched. If `gh` is missing, fails, or
-  returns no content, `web_read` throws — it never falls back to Exa.
+  returns no content, `web_read` throws — it never falls back to Exa or Tavily.
 - Every other GitHub-owned URL is rejected outright instead of
-  being sent to Exa: this includes other `github.com` paths such as
+  being sent to Exa or Tavily: this includes other `github.com` paths such as
   malformed issue/pull URLs (extra segments, non-numeric or malformed
   numbers) and profile pages; any `github.com` subdomain (`gist.github.com`,
   `api.github.com`, etc.); and `githubusercontent.com` / any other
   `*.githubusercontent.com` subdomain (`raw.githubusercontent.com` is the one
   supported exception, handled above),
   since these can serve private repository content that must never be leaked
-  to a third-party content provider. `web_read` throws a clear
+  to a third-party content provider. On fresh reads, `web_read` throws a clear
   unsupported-GitHub-URL error for these instead of returning `undefined` and
-  falling through to Exa; this applies to both fresh fetches and offset-based
-  continuation requests that miss the cache. Only URLs on genuinely unrelated
-  sites are fetched via Exa.
-- Non-GitHub URLs are fetched using Exa's provider-side retrieval.
+  falling through to either hosted provider. Any continuation request
+  (`offset > 0`) that misses the cache fails with
+  `web_read: continuation expired; restart with offset 0` before GitHub
+  classification, without calling a hosted provider. Only URLs on
+  genuinely unrelated sites are fetched via hosted providers.
+- Non-GitHub URLs are extracted by Exa or Tavily; there is no direct local
+  fetch of arbitrary websites, authenticated pages, or private-network URLs.
 - **Continuing long pages:** when a page's extracted text does not fit in one
   call, the response ends with a marker stating the current offset, the exact
   next offset, the total text length, and the call to make next, e.g.
@@ -124,36 +239,67 @@ source and extracted text; the title is included only when available.
   positions into the previously returned page text; copy them verbatim. The
   final chunk has no continuation marker.
 - Omitting `offset` (or passing `0`) always fetches the page fresh (via the
-  GitHub reader or Exa, per the routing above), atomically replacing (or
-  removing, if the fresh page fits in one call) that URL's cache entry.
+  GitHub reader or hosted provider routing, per the rules above), replacing
+  (or removing, if the fresh page fits in one call) that URL's cache entry.
 - The extension caches up to 5 pages' continuation state in a private,
   per-process temp directory (not shared between agents or processes). A
   continuation call (`offset > 0`) reuses a cached entry only when it targets
-  the same URL as a cached fetch; otherwise (a different URL, a corrupted or
-  missing cache file, an evicted entry, or a fresh process) it re-fetches
-  before applying the offset. The 6th distinct page evicts the
-  least-recently-used cached entry; reading a cached entry refreshes it.
+  the same URL as a cached fetch, keeping its provider and mode without a new
+  provider request. Otherwise (a different URL, a corrupted or missing cache
+  file, an evicted entry, or a fresh process), it fails and asks you to restart
+  with `offset: 0` rather than applying an old offset to a fresh extraction.
+  The 6th distinct page evicts the least-recently-used cached entry; reading a
+  cached entry refreshes it.
   Finishing a page (reaching its last chunk) removes its cache entry. The
   cache directory is cleaned up on graceful shutdown and is otherwise
   abandoned to OS temp-directory cleanup if the process crashes.
-- No retry, and no direct local page fetch for non-GitHub-code URLs —
-  retrieval for those is always performed via the Exa API.
+- Each hosted request has a 30s timeout. Failed routes fall back as described
+  above; GitHub reader failures never fall back to hosted providers.
 
 ### `web_search`
 
-`web_search(query)` searches the web via Exa and returns up to 5 results as
-Markdown. Every valid result has a source URL; a title and a short excerpt
-(up to 500 characters) are included when Exa provides them. Malformed search
-entries may be omitted, and the output reports the omitted count.
+`web_search(query)` searches the web through Exa or Tavily and returns up to 5
+results as Markdown. Every valid result has a source URL; a title and a short
+excerpt (up to 500 characters) are included when the provider supplies them.
+Titles are collapsed to one line and truncated to at most 200 characters.
+Providers may silently discard malformed URLs before formatting. The reported
+`omitted` count covers only entries rejected during final formatting.
 
 - Fixed result count (5) and excerpt length; no pagination or batching.
-- Fixed 30s timeout, same credential and error handling as `web_read`.
+- Each hosted request has a 30s timeout; route fallback follows the rules above.
 - Does not fetch full page content — call `web_read` on a returned source URL
-  to read the full page.
-- No retry, no fallback, and no direct local fetch — retrieval is always
-  performed via the Exa API.
+  to read the full page. No direct local fetch of arbitrary websites.
 
 ## Development
+
+Transport implementations live in `src/providers/{exa,exa-anon,tavily}.ts`;
+`src/providers/registry.ts` explicitly assembles the available provider entries.
+Tavily's keyed and anonymous providers share the same REST code. In
+`src/provider-routing.ts`, `WebProvider` extends `ProviderRoute` (`search` and
+`read`) with `name: string` and `mode: "anonymous" | "keyed"`. Shared content
+types and helpers live in `src/web-content.ts`. The router alone chooses the
+provider; neither tool exposes a provider argument to the agent. Its `getStatus()`
+returns a detached, readonly snapshot of local route state. `src/index.ts` passes
+credential commands a synchronous peek at the resolved router only, keeping
+status separate from the lazy loader.
+
+The single static credential metadata list in
+`src/providers/credential-providers.ts` defines registered keyed names,
+environment variables, and Keychain accounts. It drives credential commands
+(including status and autocomplete) and the shared `resolveProviderApiKey`
+resolver used by both keyed provider factories. The registry loads both factories
+lazily on the first hosted call.
+
+Vitest loads the fail-closed guards in `test/setup.ts` before modules under test.
+Current enforcement covers `node:child_process`, `child_process`, and global
+`fetch`: unexpected calls through these boundaries fail rather than invoking
+real implementations. This is not a general OS or network sandbox.
+`AGENTS.md` requires hermetic, noninteractive tests across all external
+boundaries: no real OS prompts, Keychain or credential-store access, `osascript`,
+`security`, `gh`, `git`, or network calls. Adding another external boundary
+requires extending mocks and guards before tests exercise it. Mock boundaries
+before loading source modules; use deterministic fixtures for prompts, login,
+and cancellation.
 
 ```
 npm install

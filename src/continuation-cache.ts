@@ -2,14 +2,34 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExaContentResult, parseCachedExaContentResult } from "./exa";
+import type { AccessMode, ProviderName } from "./provider-routing";
+import { parseReadPage, type ReadPage } from "./web-content";
+
+export type CachedReadResult = ReadPage &
+  ({ provider: ProviderName; mode: AccessMode } | { provider?: never; mode?: never });
+
+function parseAttribution(
+  value: Record<string, unknown>,
+): { provider: ProviderName; mode: AccessMode } | { provider?: never; mode?: never } | undefined {
+  if (!("provider" in value) && !("mode" in value)) {
+    return {};
+  }
+  if (
+    typeof value.provider === "string" &&
+    value.provider.trim().length > 0 &&
+    (value.mode === "keyed" || value.mode === "anonymous")
+  ) {
+    return { provider: value.provider.trim(), mode: value.mode };
+  }
+  return undefined;
+}
 
 const CACHE_DIR_PREFIX = "pi-scryer-";
 const CACHE_MAX_ENTRIES = 5;
 
 export interface ContinuationCache {
-  readCachedResult(normalizedUrl: string): Promise<ExaContentResult | undefined>;
-  writeCachedResult(normalizedUrl: string, result: ExaContentResult): Promise<void>;
+  readCachedResult(normalizedUrl: string): Promise<CachedReadResult | undefined>;
+  writeCachedResult(normalizedUrl: string, result: CachedReadResult): Promise<void>;
   deleteCachedResult(normalizedUrl: string): Promise<void>;
   cleanup(): Promise<void>;
 }
@@ -19,7 +39,7 @@ export interface ContinuationCache {
  * CACHE_MAX_ENTRIES pages, each backed by a private temp-directory file
  * keyed by a SHA-256 hash of the normalized URL (never the raw URL). Only
  * file path/order metadata is retained in memory between execute calls; no
- * full Exa text is kept resident. All read/write/evict/cleanup operations
+ * full page text is kept resident. All read/write/evict/cleanup operations
  * are serialized through a small promise queue so cleanup and eviction
  * never race an in-flight file operation; network fetches stay outside it.
  */
@@ -62,7 +82,7 @@ export function createContinuationCache(): ContinuationCache {
     return cacheDirPromise;
   }
 
-  async function readCachedResult(normalizedUrl: string): Promise<ExaContentResult | undefined> {
+  async function readCachedResult(normalizedUrl: string): Promise<CachedReadResult | undefined> {
     return enqueueCacheTask(async () => {
       const entry = cacheEntries.get(normalizedUrl);
       if (!entry) {
@@ -71,14 +91,18 @@ export function createContinuationCache(): ContinuationCache {
       try {
         const raw = await readFile(entry.file, "utf-8");
         const parsed: unknown = JSON.parse(raw);
-        const normalized = parseCachedExaContentResult(parsed);
-        if (!normalized) {
+        const normalized = parseReadPage(parsed);
+        if (!normalized || typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
           throw new Error("invalid cache entry");
+        }
+        const attribution = parseAttribution(parsed as Record<string, unknown>);
+        if (!attribution) {
+          throw new Error("invalid cache attribution");
         }
         // Refresh LRU order on cache hit.
         cacheEntries.delete(normalizedUrl);
         cacheEntries.set(normalizedUrl, entry);
-        return normalized;
+        return { ...normalized, ...attribution };
       } catch {
         cacheEntries.delete(normalizedUrl);
         await rm(entry.file, { force: true }).catch(() => {});
@@ -87,14 +111,18 @@ export function createContinuationCache(): ContinuationCache {
     });
   }
 
-  async function writeCachedResult(normalizedUrl: string, result: ExaContentResult): Promise<void> {
+  async function writeCachedResult(normalizedUrl: string, result: CachedReadResult): Promise<void> {
     await enqueueCacheTask(async () => {
+      const attribution = parseAttribution({ ...result });
+      if (!attribution) {
+        throw new Error("invalid cache attribution");
+      }
       const dir = await ensureCacheDir();
       const hash = createHash("sha256").update(normalizedUrl).digest("hex");
       const suffix = randomBytes(8).toString("hex");
       const finalPath = join(dir, `${hash}-${suffix}.json`);
       const tmpPath = `${finalPath}.tmp`;
-      const payload: ExaContentResult = { title: result.title, url: result.url, text: result.text };
+      const payload: CachedReadResult = { title: result.title, url: result.url, text: result.text, ...attribution };
       try {
         await writeFile(tmpPath, JSON.stringify(payload), { mode: 0o600 });
         await rename(tmpPath, finalPath);

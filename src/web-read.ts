@@ -1,9 +1,11 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, defineTool, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Text, TruncatedText, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { ContinuationCache } from "./continuation-cache";
-import { type ExaContentResult, fetchExaContent, isHttpUrl, isNonEmptyString, truncateForDisplay } from "./exa";
+import type { CachedReadResult, ContinuationCache } from "./continuation-cache";
 import type { GitHubReader } from "./github";
+import { providerLabel } from "./provider-label";
+import type { AccessMode, createProviderRouter, ProviderName } from "./provider-routing";
+import { isHttpUrl, isNonEmptyString, parseReadPage, truncateForDisplay } from "./web-content";
 
 const CALL_PREVIEW_MAX_CHARS = 80;
 const DISPLAY_LINE_MAX_CHARS = 80;
@@ -20,6 +22,8 @@ interface WebReadToolDetails {
   offset: number;
   nextOffset?: number;
   totalLength: number;
+  provider?: ProviderName;
+  mode?: AccessMode;
 }
 
 /**
@@ -55,9 +59,13 @@ function takeUtf8BytePrefix(text: string, maxBytes: number): string {
  * Creates the web_read tool definition, bound to the given continuation
  * cache instance and GitHub reader. GitHub code and raw-file URLs use
  * authenticated local clones; issue and pull request URLs use `gh view`.
- * Unsupported GitHub URLs fail closed. Only unrelated sites use Exa.
+ * Unsupported GitHub URLs fail closed. Only unrelated sites use hosted providers.
  */
-export function createWebReadTool(cache: ContinuationCache, githubReader: GitHubReader) {
+export function createWebReadTool(
+  cache: ContinuationCache,
+  githubReader: GitHubReader,
+  getRouter: () => Promise<ReturnType<typeof createProviderRouter>>,
+) {
   return defineTool({
     name: "web_read",
     label: "Read Web Page",
@@ -118,14 +126,19 @@ export function createWebReadTool(cache: ContinuationCache, githubReader: GitHub
         DISPLAY_LINE_MAX_CHARS,
       );
       const more = details.nextOffset !== undefined ? theme.fg("warning", ` (more: offset ${details.nextOffset})`) : "";
+      const attribution =
+        details.provider && details.mode
+          ? theme.fg("dim", ` · ${providerLabel(details.provider)} (${details.mode})`)
+          : "";
       const range =
         details.offset > 0 || details.truncated
           ? ` (offsets ${details.offset}-${(details.nextOffset ?? details.totalLength) - 1} of ${details.totalLength})`
           : "";
       return {
         render(width: number) {
-          const preview = truncateToWidth(base, Math.max(1, width - visibleWidth(more)), "…");
-          const summary = theme.fg("muted", preview) + more;
+          const suffix = more + attribution;
+          const preview = truncateToWidth(base, Math.max(1, width - visibleWidth(suffix)), "…");
+          const summary = theme.fg("muted", preview) + suffix;
           const rangeLabel = visibleWidth(summary + range) <= width ? theme.fg("dim", range) : "";
           return new TruncatedText(summary + rangeLabel, 0, 0).render(width);
         },
@@ -149,27 +162,38 @@ export function createWebReadTool(cache: ContinuationCache, githubReader: GitHub
 
       const normalizedUrl = new URL(rawUrl).toString();
 
-      let result: ExaContentResult;
+      let result: CachedReadResult;
       let servedFromCache = false;
       if (offset > 0) {
         const cached = await cache.readCachedResult(normalizedUrl);
-        if (cached) {
-          result = cached;
-          servedFromCache = true;
-        } else {
-          const fromReader = await githubReader.read(normalizedUrl, signal);
-          result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
+        if (!cached) {
+          throw new Error("web_read: continuation expired; restart with offset 0");
         }
+        result = cached;
+        servedFromCache = true;
       } else {
         const fromReader = await githubReader.read(normalizedUrl, signal);
-        result = fromReader ?? (await fetchExaContent(normalizedUrl, signal));
+        if (fromReader) {
+          result = fromReader;
+        } else {
+          const { value, provider, mode } = await (await getRouter()).read(normalizedUrl, signal);
+          const page = parseReadPage(value);
+          if (!page) {
+            throw new Error("web_read: content provider returned an invalid page");
+          }
+          result = { ...page, provider, mode };
+        }
       }
 
       if (offset >= result.text.length) {
         throw new Error("web_read: offset is at or beyond the end of the page content");
       }
 
-      const header = result.title ? `# ${result.title}\nSource: ${result.url}\n\n` : `Source: ${result.url}\n\n`;
+      const attribution =
+        result.provider && result.mode ? `Provider: ${providerLabel(result.provider)} (${result.mode})\n` : "";
+      const header = result.title
+        ? `# ${result.title}\nSource: ${result.url}\n${attribution}\n`
+        : `Source: ${result.url}\n${attribution}\n`;
       const headerBytes = Buffer.byteLength(header, "utf-8");
       const headerLines = (header.match(/\n/g) ?? []).length;
 
@@ -204,6 +228,7 @@ export function createWebReadTool(cache: ContinuationCache, githubReader: GitHub
         truncated: hasMore,
         offset,
         totalLength: result.text.length,
+        ...(result.provider && result.mode ? { provider: result.provider, mode: result.mode } : {}),
         ...(hasMore ? { nextOffset } : {}),
       };
 

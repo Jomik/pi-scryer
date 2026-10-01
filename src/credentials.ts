@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { providerLabel } from "./provider-label";
+import type { ProviderStatus } from "./provider-routing";
+import { CREDENTIAL_PROVIDERS, type CredentialProvider, getCredentialProvider } from "./providers/credential-providers";
 
 const KEYCHAIN_SERVICE = "pi-scryer";
-const KEYCHAIN_ACCOUNT = "exa-api-key";
-const COMMAND_USAGE = "/scryer login|logout|status";
-const PROMPT_TEXT = "Enter your Exa API key";
+const COMMAND_USAGE = `/scryer login <keyed-provider> | logout <keyed-provider> | status (keyed providers: ${CREDENTIAL_PROVIDERS.map((provider) => provider.name).join(", ")})`;
+const RESTART_NOTICE = "Restart Pi to refresh the cached provider registry.";
 
-export { KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE };
+export { KEYCHAIN_SERVICE };
 
 type SubprocessError = Error & { stdout?: string; stderr?: string };
 
@@ -56,11 +58,12 @@ function isUserCancelledError(error: unknown): boolean {
 }
 
 /**
- * Reads the Exa API key from the macOS Keychain. Returns undefined when not
+ * Reads the provider API key from the macOS Keychain. Returns undefined when not
  * on macOS, when no item exists, when the stored value is empty, or on any
- * subprocess failure. Never throws.
+ * subprocess failure. Rejects unsupported provider names before any subprocess.
  */
-export async function fetchKeychainKey(): Promise<string | undefined> {
+export async function fetchKeychainKey(name: string): Promise<string | undefined> {
+  const provider = getCredentialProvider(name);
   if (!isMacOS()) {
     return undefined;
   }
@@ -70,7 +73,7 @@ export async function fetchKeychainKey(): Promise<string | undefined> {
       "-s",
       KEYCHAIN_SERVICE,
       "-a",
-      KEYCHAIN_ACCOUNT,
+      provider.keychainAccount,
       "-w",
     ]);
     const trimmed = stdout.trim();
@@ -81,17 +84,18 @@ export async function fetchKeychainKey(): Promise<string | undefined> {
 }
 
 /**
- * Checks whether a Keychain item exists for the Exa API key, without ever
+ * Checks whether a Keychain item exists for the provider API key, without ever
  * reading or exposing its value. Runs the presence check without the `-w`
  * flag. Returns false on non-macOS platforms (no subprocess invoked) and on
  * any missing item or subprocess failure.
  */
-export async function hasKeychainKey(): Promise<boolean> {
+export async function hasKeychainKey(name: string): Promise<boolean> {
+  const provider = getCredentialProvider(name);
   if (!isMacOS()) {
     return false;
   }
   try {
-    await run("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT]);
+    await run("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", provider.keychainAccount]);
     return true;
   } catch {
     return false;
@@ -99,32 +103,43 @@ export async function hasKeychainKey(): Promise<boolean> {
 }
 
 /**
- * Stores or updates the Exa API key in the macOS Keychain. Throws a fixed,
+ * Stores or updates the provider API key in the macOS Keychain. Throws a fixed,
  * sanitized error (never the raw subprocess error or the supplied key) on
  * failure.
  */
-export async function storeKeychainKey(apiKey: string): Promise<void> {
+export async function storeKeychainKey(name: string, apiKey: string): Promise<void> {
+  const provider = getCredentialProvider(name);
   if (!isMacOS()) {
     throw new Error("credentials: Keychain is only available on macOS");
   }
   try {
-    await run("security", ["add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT, "-w", apiKey, "-U"]);
+    await run("security", [
+      "add-generic-password",
+      "-s",
+      KEYCHAIN_SERVICE,
+      "-a",
+      provider.keychainAccount,
+      "-w",
+      apiKey,
+      "-U",
+    ]);
   } catch {
     throw new Error("credentials: failed to store key in Keychain");
   }
 }
 
 /**
- * Deletes the Exa API key from the macOS Keychain. Idempotent: a missing
+ * Deletes the provider API key from the macOS Keychain. Idempotent: a missing
  * item is treated as success. Throws a fixed, sanitized error on any other
  * failure.
  */
-export async function deleteKeychainKey(): Promise<void> {
+export async function deleteKeychainKey(name: string): Promise<void> {
+  const provider = getCredentialProvider(name);
   if (!isMacOS()) {
     return;
   }
   try {
-    await run("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT]);
+    await run("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", provider.keychainAccount]);
   } catch (error) {
     if (isItemNotFoundError(error)) {
       return;
@@ -134,7 +149,7 @@ export async function deleteKeychainKey(): Promise<void> {
 }
 
 /**
- * Prompts the user for the Exa API key via a hidden macOS dialog. The
+ * Prompts the user for an API key via a hidden macOS dialog. The
  * prompt text is passed as a discrete argv entry to the AppleScript (never
  * interpolated into the script source), avoiding injection. Returns the
  * entered value, or null if the user cancelled. Throws a fixed, sanitized
@@ -158,53 +173,73 @@ export async function promptForApiKey(promptText: string): Promise<string | null
 }
 
 /**
- * Resolves the Exa API key to use for outgoing requests. On macOS, the
+ * Resolves a keyed provider API key to use for outgoing requests. On macOS, the
  * Keychain is consulted first; if it is missing, empty, or inaccessible,
- * falls back to the trimmed EXA_API_KEY environment variable. On non-macOS
+ * falls back to the trimmed provider environment variable. On non-macOS
  * platforms only the environment variable is consulted; the Keychain is
  * never invoked. The key is never cached: each call re-reads the source(s).
  */
-export async function resolveExaApiKey(): Promise<string | undefined> {
+export async function resolveProviderApiKey(name: string): Promise<string | undefined> {
+  const provider = getCredentialProvider(name);
   if (isMacOS()) {
-    const keychainKey = await fetchKeychainKey();
+    const keychainKey = await fetchKeychainKey(name);
     if (keychainKey !== undefined) {
       return keychainKey;
     }
   }
-  const envKey = process.env.EXA_API_KEY?.trim();
+  const envKey = process.env[provider.envVariable]?.trim();
   return envKey && envKey.length > 0 ? envKey : undefined;
 }
 
-function hasEnvKey(): boolean {
-  return Boolean(process.env.EXA_API_KEY?.trim());
+function hasEnvKey(provider: CredentialProvider): boolean {
+  return Boolean(process.env[provider.envVariable]?.trim());
 }
 
-/**
- * Reports which source (if any) will supply the Exa API key, without ever
- * reading or exposing the key's value. Keychain presence is checked first on
- * macOS; only its existence (not its content) is queried.
- */
-async function reportStatus(ctx: ExtensionCommandContext): Promise<void> {
-  if (isMacOS() && (await hasKeychainKey())) {
-    ctx.ui.notify("scryer: Exa API key source: Keychain", "info");
+type PeekRuntimeStatus = () => readonly ProviderStatus[] | undefined;
+
+/** Reports source presence separately from initialized runtime availability. */
+async function reportStatus(ctx: ExtensionCommandContext, peekRuntimeStatus?: PeekRuntimeStatus): Promise<void> {
+  for (const provider of CREDENTIAL_PROVIDERS) {
+    const source = (await hasKeychainKey(provider.name))
+      ? "Keychain"
+      : hasEnvKey(provider)
+        ? `environment (${provider.envVariable})`
+        : "missing";
+    ctx.ui.notify(`scryer: ${provider.displayName} API key source: ${source}`, "info");
+  }
+
+  const statuses = peekRuntimeStatus?.();
+  if (statuses === undefined) {
+    ctx.ui.notify("scryer: runtime not initialized", "info");
     return;
   }
-  if (hasEnvKey()) {
-    ctx.ui.notify("scryer: Exa API key source: environment (EXA_API_KEY)", "info");
-    return;
+  const now = Date.now();
+  const age = (timestamp: number | undefined) =>
+    timestamp === undefined ? "never" : `${Math.max(0, Math.floor((now - timestamp) / 1000))}s ago`;
+  for (const status of statuses) {
+    const availability =
+      status.state === "disabled"
+        ? `disabled · ${status.disabledReason === "quota" ? "quota exhausted" : "invalid credentials"}`
+        : status.state === "cooling-down" && status.retryAt !== undefined && status.retryAt > now
+          ? `cooling down · retry in ${Math.ceil((status.retryAt - now) / 1000)}s`
+          : "eligible";
+    ctx.ui.notify(
+      `scryer: ${providerLabel(status.provider)} (${status.mode}): ${availability} · last attempt: ${age(status.lastAttemptAt)} · last success: ${age(status.lastSuccessAt)}`,
+      "info",
+    );
   }
-  ctx.ui.notify("scryer: Exa API key source: missing", "info");
+  for (const provider of CREDENTIAL_PROVIDERS) {
+    if (!statuses.some((status) => status.provider === provider.name && status.mode === "keyed")) {
+      ctx.ui.notify(`scryer: ${providerLabel(provider.name)} (keyed): not configured`, "info");
+    }
+  }
 }
 
-/**
- * Interactively prompts for and stores an Exa API key in the macOS Keychain.
- * Only available on macOS in the interactive TUI; every other case reports a
- * fixed, sanitized guidance message and performs no subprocess.
- */
-async function handleLogin(ctx: ExtensionCommandContext): Promise<void> {
+/** Prompts only in the interactive macOS TUI; otherwise gives env guidance. */
+async function handleLogin(provider: CredentialProvider, ctx: ExtensionCommandContext): Promise<void> {
   if (!isMacOS() || ctx.mode !== "tui" || !ctx.hasUI) {
     ctx.ui.notify(
-      "scryer: login requires the interactive macOS TUI; set the EXA_API_KEY environment variable instead",
+      `scryer: login requires the interactive macOS TUI; set the ${provider.envVariable} environment variable instead`,
       "error",
     );
     return;
@@ -212,104 +247,104 @@ async function handleLogin(ctx: ExtensionCommandContext): Promise<void> {
 
   let entered: string | null;
   try {
-    entered = await promptForApiKey(PROMPT_TEXT);
+    entered = await promptForApiKey(`Enter your ${provider.displayName} API key`);
   } catch {
-    ctx.ui.notify("scryer: failed to read the Exa API key", "error");
+    ctx.ui.notify(`scryer: failed to read the ${provider.displayName} API key`, "error");
     return;
   }
 
   if (entered === null) {
-    ctx.ui.notify("scryer: login cancelled", "info");
+    ctx.ui.notify(`scryer: ${provider.displayName} login cancelled`, "info");
     return;
   }
 
   const trimmed = entered.trim();
   if (trimmed.length === 0) {
-    ctx.ui.notify("scryer: no Exa API key entered", "error");
+    ctx.ui.notify(`scryer: no ${provider.displayName} API key entered`, "error");
     return;
   }
 
   try {
-    await storeKeychainKey(trimmed);
+    await storeKeychainKey(provider.name, trimmed);
   } catch {
-    ctx.ui.notify("scryer: failed to store the Exa API key in Keychain", "error");
+    ctx.ui.notify(`scryer: failed to store the ${provider.displayName} API key in Keychain`, "error");
     return;
   }
 
-  ctx.ui.notify("scryer: Exa API key stored in Keychain", "info");
+  ctx.ui.notify(`scryer: ${provider.displayName} API key stored in Keychain. ${RESTART_NOTICE}`, "info");
 }
 
-/**
- * Idempotently removes the Exa API key from the macOS Keychain. Never
- * touches the EXA_API_KEY environment variable; notifies when it remains as
- * a fallback. Non-macOS platforms perform no subprocess.
- */
-async function handleLogout(ctx: ExtensionCommandContext): Promise<void> {
+/** Removes only the selected Keychain item; its environment fallback remains. */
+async function handleLogout(provider: CredentialProvider, ctx: ExtensionCommandContext): Promise<void> {
   if (!isMacOS()) {
     ctx.ui.notify(
-      "scryer: Keychain is only available on macOS; unset EXA_API_KEY to remove the environment fallback",
+      `scryer: Keychain is only available on macOS; unset ${provider.envVariable} to remove the environment fallback`,
       "info",
     );
     return;
   }
 
   try {
-    await deleteKeychainKey();
+    await deleteKeychainKey(provider.name);
   } catch {
-    ctx.ui.notify("scryer: failed to remove the Exa API key from Keychain", "error");
+    ctx.ui.notify(`scryer: failed to remove the ${provider.displayName} API key from Keychain`, "error");
     return;
   }
 
-  if (hasEnvKey()) {
-    ctx.ui.notify(
-      "scryer: removed from Keychain; EXA_API_KEY environment variable is still set and will be used",
-      "info",
-    );
-    return;
-  }
-  ctx.ui.notify("scryer: removed from Keychain", "info");
+  const fallback = hasEnvKey(provider)
+    ? `; ${provider.envVariable} environment variable is still set and will be used`
+    : "";
+  ctx.ui.notify(`scryer: ${provider.displayName} API key removed from Keychain${fallback}. ${RESTART_NOTICE}`, "info");
 }
 
-/**
- * Handles the `/scryer` command. Accepts exactly the empty string, `status`,
- * `login`, and `logout` (after trimming); anything else, including extra
- * arguments to a known subcommand, shows the fixed usage message and
- * performs no subprocess.
- */
-export async function scryerCommandHandler(args: string, ctx: ExtensionCommandContext): Promise<void> {
+/** Validates all arguments before prompting or invoking Keychain operations. */
+export async function scryerCommandHandler(
+  args: string,
+  ctx: ExtensionCommandContext,
+  peekRuntimeStatus?: PeekRuntimeStatus,
+): Promise<void> {
   const trimmed = args.trim();
-
   if (trimmed.length === 0) {
-    await reportStatus(ctx);
+    await reportStatus(ctx, peekRuntimeStatus);
     ctx.ui.notify(COMMAND_USAGE, "info");
     return;
   }
-
   if (trimmed === "status") {
-    await reportStatus(ctx);
+    await reportStatus(ctx, peekRuntimeStatus);
     return;
   }
 
-  if (trimmed === "login") {
-    await handleLogin(ctx);
-    return;
+  const [command, name, ...extra] = trimmed.split(/\s+/);
+  const provider = CREDENTIAL_PROVIDERS.find((provider) => provider.name === name);
+  if (provider && extra.length === 0) {
+    if (command === "login") {
+      await handleLogin(provider, ctx);
+      return;
+    }
+    if (command === "logout") {
+      await handleLogout(provider, ctx);
+      return;
+    }
   }
-
-  if (trimmed === "logout") {
-    await handleLogout(ctx);
-    return;
-  }
-
   ctx.ui.notify(COMMAND_USAGE, "warning");
 }
 
-/**
- * Registers the `/scryer` command on the provided extension API, wiring the
- * fixed command name, description, and handler.
- */
-export function registerScryerCommand(api: ExtensionAPI): void {
+export function registerScryerCommand(api: ExtensionAPI, peekRuntimeStatus?: PeekRuntimeStatus): void {
   api.registerCommand("scryer", {
-    description: "Manage the Exa API key used by pi-scryer (status, login, logout)",
-    handler: scryerCommandHandler,
+    description: "Manage provider API keys used by pi-scryer (status, login <provider>, logout <provider>)",
+    getArgumentCompletions: (prefix) => {
+      let values: string[];
+      if (!/\s/.test(prefix)) {
+        values = ["login", "logout", "status"].filter((command) => command.startsWith(prefix));
+      } else {
+        const match = /^(login|logout) ([^\s]*)$/.exec(prefix);
+        if (!match) return null;
+        values = CREDENTIAL_PROVIDERS.filter((provider) => provider.name.startsWith(match[2])).map(
+          (provider) => `${match[1]} ${provider.name}`,
+        );
+      }
+      return values.length > 0 ? values.map((value) => ({ value, label: value })) : null;
+    },
+    handler: (args, ctx) => scryerCommandHandler(args, ctx, peekRuntimeStatus),
   });
 }

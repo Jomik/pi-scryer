@@ -2,7 +2,7 @@
   "name": "pi-scryer",
   "version": "0.1.0",
   "packageManager": "npm@11.12.1",
-  "description": "Minimal Exa web access for pi.",
+  "description": "Exa and Tavily web search and reading for pi.",
   "license": "MIT",
   "author": "Jonas Damtoft",
   "repository": {
@@ -15,6 +15,7 @@
     "agent",
     "tools",
     "exa",
+    "tavily",
     "web"
   ],
   "type": "module",
