@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, type Mock, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, type Mock, vi } from "vitest";
 
 // Hoisted before any source imports. Never import/spread the actual OS module.
 // Vitest isolates this state per file; only boundary names, never argv or URLs,
@@ -62,6 +62,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetBoundaries();
+  assertNoUnexpectedBoundaryAttempts();
+});
+
+// Stack ordering runs this setup hook last, after file/harness teardown.
+afterAll(() => {
   resetBoundaries();
   assertNoUnexpectedBoundaryAttempts();
 });
