@@ -1,13 +1,9 @@
 import { mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createGitHubReader } from "../src/github";
 
-const execFileMock = vi.hoisted(() => vi.fn());
-
-vi.mock("node:child_process", () => ({
-  execFile: execFileMock,
-}));
+import { execFileMock } from "./setup";
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 type ExecFileCall = [string, string[], Record<string, unknown>, ExecFileCallback];

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as credentials from "../src/credentials";
-import { activateExtension, jsonResponse, noop, ORIGINAL_ENV, SECRET_KEY } from "./harness";
+import { activateExtension, execFileMock, jsonResponse, noop, ORIGINAL_ENV, SECRET_KEY } from "./harness";
+
+// Evaluate the harness before importing credentials; setup also installs the
+// fail-closed subprocess mock before either module is loaded.
+const credentials = await import("../src/credentials");
 
 describe("extension registration", () => {
   beforeEach(() => {
@@ -52,6 +55,40 @@ describe("extension registration", () => {
   it("registers exactly one scryer command", () => {
     const { commands } = activateExtension();
     expect(commands.map((command) => command.name)).toEqual(["scryer"]);
-    expect(commands[0].description).toBe("Manage the Exa API key used by pi-scryer (status, login, logout)");
+    expect(commands[0].description).toBe(
+      "Manage provider API keys used by pi-scryer (status, login <provider>, logout <provider>)",
+    );
+  });
+  describe("registered argument completions", () => {
+    it.each([
+      ["", ["login", "logout", "status"]],
+      ["lo", ["login", "logout"]],
+      ["sta", ["status"]],
+      ["login ", ["login exa", "login tavily"]],
+      ["logout ", ["logout exa", "logout tavily"]],
+      ["login ta", ["login tavily"]],
+      ["logout ex", ["logout exa"]],
+    ] as const)("completes %j using full argument values", (prefix, values) => {
+      const command = activateExtension().commands[0];
+      expect(command.getArgumentCompletions?.(prefix)).toEqual(values.map((value) => ({ value, label: value })));
+    });
+
+    it.each([
+      "bogus",
+      "status ",
+      "status exa",
+      "login unknown",
+      "login exa-anon",
+      "logout tavily-anon",
+      "login exa secret",
+      "logout tavily secret",
+      "login exa ",
+      "login  ",
+      "login ta extra",
+    ])("returns null for invalid or extra prefix %j", (prefix) => {
+      const command = activateExtension().commands[0];
+      expect(command.getArgumentCompletions?.(prefix)).toBeNull();
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
   });
 });

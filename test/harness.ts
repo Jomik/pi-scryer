@@ -3,8 +3,12 @@ import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { afterAll, afterEach, expect, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, vi } from "vitest";
 import activate from "../src/index";
+import { CREDENTIAL_PROVIDERS } from "../src/providers/credential-providers";
+import { blockExternalBoundary, execFileMock } from "./setup";
+
+export { execFileMock } from "./setup";
 
 // Each isolated Vitest file owns its temporary root, so cache scans cannot
 // observe directories created or removed by parallel workers. Assign directly
@@ -25,33 +29,37 @@ afterAll(async () => {
   }
 });
 
-// Hoisted mock for node:child_process.execFile. Default behavior simulates a
-// missing macOS Keychain item (as `security` reports it), so every existing
-// tool test that relies on the EXA_API_KEY env fallback stays deterministic
-// and never touches the real Keychain. Individual credential tests may
-// override the implementation per-case; the top-level afterEach below
-// restores this default so state never leaks between tests.
+// The global setup blocks all subprocesses before source imports. This
+// harness opts into only the registered providers' exact Keychain find
+// shapes, simulating a missing item for integration env fallbacks. Tests
+// invoking git/gh, writes, or prompts must install an explicit fixture.
 type ExecFileCallback = (
   error: (Error & { stdout?: string; stderr?: string }) | null,
   stdout: string,
   stderr: string,
 ) => void;
 
-function defaultExecFileImplementation(_file: string, _args: readonly string[], callback: ExecFileCallback): void {
+function defaultExecFileImplementation(file: string, args: readonly string[], callback: ExecFileCallback): void {
+  if (
+    file !== "security" ||
+    !Array.isArray(args) ||
+    (args.length !== 5 && args.length !== 6) ||
+    args[0] !== "find-generic-password" ||
+    args[1] !== "-s" ||
+    args[2] !== "pi-scryer" ||
+    args[3] !== "-a" ||
+    !CREDENTIAL_PROVIDERS.some((provider) => provider.keychainAccount === args[4]) ||
+    (args.length === 6 && args[5] !== "-w") ||
+    typeof callback !== "function"
+  ) {
+    blockExternalBoundary("child_process.execFile");
+  }
   const error = new Error("item not found") as Error & { stdout?: string; stderr?: string };
   const stderr = "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.";
   error.stdout = "";
   error.stderr = stderr;
   callback(error, "", stderr);
 }
-
-const execFileMockRef = vi.hoisted(() => vi.fn());
-
-vi.mock("node:child_process", () => ({
-  execFile: execFileMockRef,
-}));
-
-export const execFileMock = execFileMockRef;
 
 export interface WebReadToolDetails {
   title?: string;
@@ -156,10 +164,11 @@ afterEach(async () => {
     await handler({ type: "session_shutdown", reason: "quit" }, {});
   }
   execFileMock.mockReset();
-  execFileMock.mockImplementation(defaultExecFileImplementation);
 });
 
-execFileMock.mockImplementation(defaultExecFileImplementation);
+beforeEach(() => {
+  execFileMock.mockImplementation(defaultExecFileImplementation);
+});
 
 export async function listCacheDirNames(): Promise<string[]> {
   const entries = await readdir(tmpdir());
@@ -169,6 +178,7 @@ export async function listCacheDirNames(): Promise<string[]> {
 export interface RegisteredCommand {
   name: string;
   description?: string;
+  getArgumentCompletions?: (prefix: string) => { value: string; label: string }[] | null;
   handler: (args: string, ctx: unknown) => Promise<void>;
 }
 

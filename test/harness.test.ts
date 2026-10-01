@@ -2,7 +2,33 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { CACHE_DIR_PREFIX, listCacheDirNames } from "./harness";
+import { CACHE_DIR_PREFIX, execFileMock, listCacheDirNames } from "./harness";
+import { consumeBoundaryAttempts } from "./setup";
+
+it.each(["exa-api-key", "tavily-api-key"])("fakes only registered Keychain find shapes for %s", (account) => {
+  for (const suffix of [[], ["-w"]]) {
+    const callback = vi.fn();
+    execFileMock("security", ["find-generic-password", "-s", "pi-scryer", "-a", account, ...suffix], callback);
+    expect(callback).toHaveBeenCalledWith(expect.any(Error), "", expect.stringContaining("could not be found"));
+  }
+  expect(consumeBoundaryAttempts()).toEqual([]);
+});
+
+it.each([
+  ["osascript", ["-e", "test-only-script"]],
+  ["security", ["add-generic-password", "-s", "pi-scryer", "-a", "exa-api-key"]],
+  ["security", ["delete-generic-password", "-s", "pi-scryer", "-a", "exa-api-key"]],
+  ["security", ["find-generic-password", "-s", "other-service", "-a", "exa-api-key", "-w"]],
+  ["security", ["find-generic-password", "-s", "pi-scryer", "-a", "unknown-account", "-w"]],
+  ["security", ["find-generic-password", "-s", "pi-scryer", "-a", "exa-api-key", "-w", "extra"]],
+  ["gh", ["auth", "login"]],
+  ["git", ["fetch"]],
+] as const)("rejects unregistered harness command fixture %s", (file, args) => {
+  const callback = vi.fn();
+  expect(() => execFileMock(file, args, callback)).toThrow("Unexpected external boundary: child_process.execFile");
+  expect(callback).not.toHaveBeenCalled();
+  expect(consumeBoundaryAttempts()).toEqual(["child_process.execFile"]);
+});
 
 it("uses a private temporary root and ignores foreign global cache directories", async () => {
   const root = tmpdir();

@@ -1,12 +1,13 @@
 export interface CredentialProvider {
   readonly name: string;
+  readonly displayName: string;
   readonly envVariable: string;
   readonly keychainAccount: string;
 }
 
-const CREDENTIAL_PROVIDERS: readonly CredentialProvider[] = [
-  { name: "exa", envVariable: "EXA_API_KEY", keychainAccount: "exa-api-key" },
-  { name: "tavily", envVariable: "TAVILY_API_KEY", keychainAccount: "tavily-api-key" },
+export const CREDENTIAL_PROVIDERS: readonly CredentialProvider[] = [
+  { name: "exa", displayName: "Exa", envVariable: "EXA_API_KEY", keychainAccount: "exa-api-key" },
+  { name: "tavily", displayName: "Tavily", envVariable: "TAVILY_API_KEY", keychainAccount: "tavily-api-key" },
 ];
 
 /** Only registered keyed providers have credentials; anonymous and unknown names are rejected. */

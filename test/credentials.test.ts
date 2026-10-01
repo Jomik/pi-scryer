@@ -11,12 +11,10 @@ import {
   scryerCommandHandler,
   storeKeychainKey,
 } from "../src/credentials";
-
-const execFileMock = vi.hoisted(() => vi.fn());
-
-vi.mock("node:child_process", () => ({
-  execFile: execFileMock,
-}));
+import { CREDENTIAL_PROVIDERS } from "../src/providers/credential-providers";
+// setupFiles installs this mock before the credentials module is imported.
+// mockReset restores its throwing/tracked baseline, never an empty function.
+import { execFileMock } from "./setup";
 
 const ORIGINAL_ENV = process.env.EXA_API_KEY;
 const ORIGINAL_TAVILY_ENV = process.env.TAVILY_API_KEY;
@@ -451,279 +449,223 @@ function allNotifyMessages(ctx: FakeCommandCtx): string[] {
  */
 const handler = scryerCommandHandler as unknown as (args: string, ctx: FakeCommandCtx) => Promise<void>;
 
+const USAGE = "/scryer login <keyed-provider> | logout <keyed-provider> | status (keyed providers: exa, tavily)";
+const RESTART = "Restart Pi to refresh the cached provider registry.";
+
 describe("scryer command", () => {
   beforeEach(() => {
     execFileMock.mockReset();
     delete process.env.EXA_API_KEY;
+    delete process.env.TAVILY_API_KEY;
   });
 
   afterEach(() => {
-    if (ORIGINAL_ENV === undefined) {
-      delete process.env.EXA_API_KEY;
-    } else {
-      process.env.EXA_API_KEY = ORIGINAL_ENV;
-    }
+    if (ORIGINAL_ENV === undefined) delete process.env.EXA_API_KEY;
+    else process.env.EXA_API_KEY = ORIGINAL_ENV;
+    if (ORIGINAL_TAVILY_ENV === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = ORIGINAL_TAVILY_ENV;
     vi.restoreAllMocks();
   });
 
-  it("with no args, reports status then fixed usage", async () => {
+  it("with no args, reports all sources then usage without invoking the OS off macOS", async () => {
     mockNonMacOS();
     const ctx = createCtx();
-
     await handler("", ctx);
-
-    const messages = allNotifyMessages(ctx);
-    expect(messages).toHaveLength(2);
-    expect(messages[0]).toContain("missing");
-    expect(messages[1]).toBe("/scryer login|logout|status");
+    expect(allNotifyMessages(ctx)).toEqual([
+      "scryer: Exa API key source: missing",
+      "scryer: Tavily API key source: missing",
+      USAGE,
+    ]);
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it("trims whitespace around a valid subcommand", async () => {
-    mockNonMacOS();
+  it("reports all Keychain sources using only presence checks, never key reads", async () => {
+    mockMacOS();
+    succeedWith(SECRET_KEY);
     const ctx = createCtx();
-
     await handler("  status  ", ctx);
-
-    expect(allNotifyMessages(ctx)).toHaveLength(1);
-    expect(execFileMock).not.toHaveBeenCalled();
+    expect(allNotifyMessages(ctx)).toEqual([
+      "scryer: Exa API key source: Keychain",
+      "scryer: Tavily API key source: Keychain",
+    ]);
+    expect(execFileMock.mock.calls.map(([file, args]) => [file, args])).toEqual([
+      ["security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "exa-api-key"]],
+      ["security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "tavily-api-key"]],
+    ]);
   });
 
-  describe("status", () => {
-    it("reports Keychain when present, probing without -w", async () => {
-      mockMacOS();
-      succeedWith(SECRET_KEY);
-      const ctx = createCtx();
-
-      await handler("status", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: Exa API key source: Keychain"]);
-      expect(execFileMock).toHaveBeenCalledTimes(1);
-      const [, args] = execFileMock.mock.calls[0];
-      expect(args).not.toContain("-w");
+  it("reports independent Keychain/env/missing sources without leaking credentials", async () => {
+    mockMacOS();
+    succeedWith("");
+    execFileMock.mockImplementationOnce((_file: string, _args: readonly string[], cb: ExecFileCallback) => {
+      cb(new Error("missing"), "", "");
     });
-
-    it("reports environment when Keychain is absent but EXA_API_KEY is set", async () => {
-      mockMacOS();
-      failWith("The specified item could not be found in the keychain.");
-      process.env.EXA_API_KEY = "env-key";
-      const ctx = createCtx();
-
-      await handler("status", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: Exa API key source: environment (EXA_API_KEY)"]);
-    });
-
-    it("reports missing when neither source is available", async () => {
-      mockMacOS();
-      failWith("The specified item could not be found in the keychain.");
-      const ctx = createCtx();
-
-      await handler("status", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: Exa API key source: missing"]);
-    });
+    process.env.EXA_API_KEY = SECRET_KEY;
+    process.env.TAVILY_API_KEY = "ignored-env";
+    const ctx = createCtx();
+    await handler("status", ctx);
+    expect(allNotifyMessages(ctx)).toEqual([
+      "scryer: Exa API key source: environment (EXA_API_KEY)",
+      "scryer: Tavily API key source: Keychain",
+    ]);
+    failWith(`denied ${SECRET_KEY}`);
+    delete process.env.EXA_API_KEY;
+    process.env.TAVILY_API_KEY = "  ";
+    ctx.ui.notify.mockClear();
+    await handler("status", ctx);
+    expect(allNotifyMessages(ctx)).toEqual([
+      "scryer: Exa API key source: missing",
+      "scryer: Tavily API key source: missing",
+    ]);
   });
 
-  describe("login", () => {
-    it("stores a trimmed key on success in the macOS TUI", async () => {
+  describe.each(CREDENTIAL_PROVIDERS)("$name commands", (provider) => {
+    const { name, displayName, envVariable, keychainAccount } = provider;
+
+    it("accepts explicit login with whitespace and stores only the selected account", async () => {
       mockMacOS();
       succeedWith(`  ${SECRET_KEY}  \n`);
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: Exa API key stored in Keychain"]);
-      const storeCall = execFileMock.mock.calls.find((call) => call[0] === "security");
-      expect(storeCall?.[1]).toEqual([
+      const ctx = createCtx();
+      await handler(`  login\t${name}  `, ctx);
+      expect(execFileMock.mock.calls.map(([file]) => file)).toEqual(["osascript", "security"]);
+      const promptArgs = execFileMock.mock.calls[0][1];
+      expect(promptArgs[2]).toBe(`Enter your ${displayName} API key`);
+      expect(promptArgs[1]).toContain("with hidden answer");
+      expect(promptArgs[1]).not.toContain(displayName);
+      expect(execFileMock.mock.calls[1][1]).toEqual([
         "add-generic-password",
         "-s",
         KEYCHAIN_SERVICE,
         "-a",
-        KEYCHAIN_ACCOUNT,
+        keychainAccount,
         "-w",
         SECRET_KEY,
         "-U",
       ]);
+      expect(allNotifyMessages(ctx)).toEqual([`scryer: ${displayName} API key stored in Keychain. ${RESTART}`]);
     });
 
-    it("reports cancellation without storing anything", async () => {
+    it("reports selected-provider cancellation without storing", async () => {
       mockMacOS();
       failWith("execution error: User canceled. (-128)");
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: login cancelled"]);
-      expect(execFileMock.mock.calls.some((call) => call[0] === "security")).toBe(false);
+      const ctx = createCtx();
+      await handler(`login ${name}`, ctx);
+      expect(allNotifyMessages(ctx)).toEqual([`scryer: ${displayName} login cancelled`]);
+      expect(execFileMock.mock.calls.map(([file]) => file)).toEqual(["osascript"]);
     });
 
-    it("rejects an empty key without storing anything", async () => {
+    it("rejects an empty prompted key", async () => {
       mockMacOS();
-      succeedWith("   \n");
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: no Exa API key entered"]);
-      expect(execFileMock.mock.calls.some((call) => call[0] === "security")).toBe(false);
+      succeedWith("  \n");
+      const ctx = createCtx();
+      await handler(`login ${name}`, ctx);
+      expect(allNotifyMessages(ctx)).toEqual([`scryer: no ${displayName} API key entered`]);
+      expect(execFileMock).toHaveBeenCalledTimes(1);
     });
 
-    it("reports a fixed, sanitized error when storing fails", async () => {
+    it.each(["prompt", "store"])("sanitizes %s failures", async (stage) => {
       mockMacOS();
-      execFileMock
-        .mockImplementationOnce((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
-          callback(null, `${SECRET_KEY}\n`, "");
-        })
-        .mockImplementationOnce((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
-          const error = new Error("subprocess failed") as Error & { stdout?: string; stderr?: string };
-          const stderr = `permission denied: raw detail containing ${SECRET_KEY}`;
-          error.stdout = "";
-          error.stderr = stderr;
-          callback(error, "", stderr);
+      failWith(`raw failure ${SECRET_KEY}`);
+      if (stage === "store") {
+        execFileMock.mockImplementationOnce((_file: string, _args: readonly string[], cb: ExecFileCallback) => {
+          cb(null, SECRET_KEY, "");
         });
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: failed to store the Exa API key in Keychain"]);
+      }
+      const ctx = createCtx();
+      await handler(`login ${name}`, ctx);
+      expect(allNotifyMessages(ctx)).toEqual([
+        stage === "prompt"
+          ? `scryer: failed to read the ${displayName} API key`
+          : `scryer: failed to store the ${displayName} API key in Keychain`,
+      ]);
     });
 
-    it("reports a fixed error and never invokes a subprocess on non-macOS", async () => {
-      mockNonMacOS();
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login", ctx);
-
+    it.each([
+      { platform: "linux", mode: "tui", hasUI: true },
+      { platform: "darwin", mode: "rpc", hasUI: true },
+      { platform: "darwin", mode: "json", hasUI: false },
+      { platform: "darwin", mode: "print", hasUI: false },
+      { platform: "darwin", mode: "tui", hasUI: false },
+    ] as const)("gives selected env guidance without OS access: %j", async ({ platform, mode, hasUI }) => {
+      vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      const ctx = createCtx({ mode, hasUI });
+      await handler(`login ${name}`, ctx);
       expect(allNotifyMessages(ctx)).toEqual([
-        "scryer: login requires the interactive macOS TUI; set the EXA_API_KEY environment variable instead",
+        `scryer: login requires the interactive macOS TUI; set the ${envVariable} environment variable instead`,
       ]);
       expect(execFileMock).not.toHaveBeenCalled();
     });
 
-    it("reports a fixed error and never invokes a subprocess outside the interactive TUI", async () => {
-      mockMacOS();
-      const ctx = createCtx({ mode: "rpc", hasUI: true });
-
-      await handler("login", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual([
-        "scryer: login requires the interactive macOS TUI; set the EXA_API_KEY environment variable instead",
-      ]);
-      expect(execFileMock).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("logout", () => {
-    it("removes the Keychain item and reports success when EXA_API_KEY is unset", async () => {
+    it.each([false, true])("logs out only the selected account, preserving env fallback (%s)", async (envSet) => {
       mockMacOS();
       succeedWith("");
+      process.env.EXA_API_KEY = "other-env";
+      process.env.TAVILY_API_KEY = "other-env";
+      if (envSet) process.env[envVariable] = SECRET_KEY;
+      else delete process.env[envVariable];
       const ctx = createCtx();
-
-      await handler("logout", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: removed from Keychain"]);
+      await handler(`logout ${name}`, ctx);
+      expect(execFileMock.mock.calls.map(([file, args]) => [file, args])).toEqual([
+        ["security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", keychainAccount]],
+      ]);
+      const fallback = envSet ? `; ${envVariable} environment variable is still set and will be used` : "";
+      expect(allNotifyMessages(ctx)).toEqual([
+        `scryer: ${displayName} API key removed from Keychain${fallback}. ${RESTART}`,
+      ]);
+      expect(process.env[envVariable]).toBe(envSet ? SECRET_KEY : undefined);
+      expect(process.env[name === "exa" ? "TAVILY_API_KEY" : "EXA_API_KEY"]).toBe("other-env");
     });
 
-    it("is idempotent when the Keychain item is already missing", async () => {
+    it("treats an already missing item as successful logout", async () => {
       mockMacOS();
       failWith("The specified item could not be found in the keychain.");
       const ctx = createCtx();
-
-      await handler("logout", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: removed from Keychain"]);
+      await handler(`logout ${name}`, ctx);
+      expect(allNotifyMessages(ctx)).toEqual([`scryer: ${displayName} API key removed from Keychain. ${RESTART}`]);
     });
 
-    it("reports a fixed, sanitized error when deletion fails", async () => {
+    it("sanitizes deletion failures without claiming success", async () => {
       mockMacOS();
-      failWith(`permission denied: raw detail containing ${SECRET_KEY}`);
+      failWith(`permission denied ${SECRET_KEY}`);
       const ctx = createCtx();
-
-      await handler("logout", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["scryer: failed to remove the Exa API key from Keychain"]);
+      await handler(`logout ${name}`, ctx);
+      expect(allNotifyMessages(ctx)).toEqual([`scryer: failed to remove the ${displayName} API key from Keychain`]);
     });
 
-    it("reports fixed environment guidance and never invokes a subprocess on non-macOS", async () => {
+    it("gives selected env logout guidance off macOS", async () => {
       mockNonMacOS();
       const ctx = createCtx();
-
-      await handler("logout", ctx);
-
+      await handler(`logout ${name}`, ctx);
       expect(allNotifyMessages(ctx)).toEqual([
-        "scryer: Keychain is only available on macOS; unset EXA_API_KEY to remove the environment fallback",
+        `scryer: Keychain is only available on macOS; unset ${envVariable} to remove the environment fallback`,
       ]);
-      expect(execFileMock).not.toHaveBeenCalled();
-    });
-
-    it("notifies that EXA_API_KEY still provides a fallback, leaving it untouched", async () => {
-      mockMacOS();
-      succeedWith("");
-      process.env.EXA_API_KEY = "env-key";
-      const ctx = createCtx();
-
-      await handler("logout", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual([
-        "scryer: removed from Keychain; EXA_API_KEY environment variable is still set and will be used",
-      ]);
-      expect(process.env.EXA_API_KEY).toBe("env-key");
-    });
-  });
-
-  describe("unknown or extra arguments", () => {
-    it("shows fixed usage and performs no subprocess for extra args to a known subcommand", async () => {
-      mockMacOS();
-      const ctx = createCtx({ mode: "tui", hasUI: true });
-
-      await handler("login exa", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["/scryer login|logout|status"]);
-      expect(execFileMock).not.toHaveBeenCalled();
-    });
-
-    it("shows fixed usage and performs no subprocess for an unrecognized subcommand", async () => {
-      mockMacOS();
-      const ctx = createCtx();
-
-      await handler("bogus", ctx);
-
-      expect(allNotifyMessages(ctx)).toEqual(["/scryer login|logout|status"]);
       expect(execFileMock).not.toHaveBeenCalled();
     });
   });
 
-  describe("notification safety", () => {
-    it("never includes the secret key or raw subprocess error text in any notification", async () => {
-      mockMacOS();
-      const observedMessages: string[] = [];
-
-      // login store failure path
-      execFileMock
-        .mockImplementationOnce((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
-          callback(null, `${SECRET_KEY}\n`, "");
-        })
-        .mockImplementationOnce((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
-          const error = new Error("subprocess failed") as Error & { stdout?: string; stderr?: string };
-          const stderr = `raw failure containing ${SECRET_KEY}`;
-          error.stdout = "";
-          error.stderr = stderr;
-          callback(error, "", stderr);
-        });
-      const loginCtx = createCtx({ mode: "tui", hasUI: true });
-      await handler("login", loginCtx);
-      observedMessages.push(...allNotifyMessages(loginCtx));
-
-      // logout deletion failure path
-      failWith(`raw failure containing ${SECRET_KEY}`);
-      const logoutCtx = createCtx();
-      await handler("logout", logoutCtx);
-      observedMessages.push(...allNotifyMessages(logoutCtx));
-
-      for (const message of observedMessages) {
-        expect(message).not.toContain(SECRET_KEY);
-      }
-    });
+  it.each([
+    "login",
+    "logout",
+    "bogus",
+    "status exa",
+    "status secret",
+    "login unknown",
+    "logout unknown",
+    "login exa-anon",
+    "logout tavily-anon",
+    "login EXA",
+    "login toString",
+    "logout __proto__",
+    `login exa ${SECRET_KEY}`,
+    `login tavily ${SECRET_KEY}`,
+    `logout exa ${SECRET_KEY}`,
+    `logout tavily ${SECRET_KEY}`,
+    `login ${SECRET_KEY}`,
+  ])("rejects invalid arguments %j before any prompt or Keychain access", async (args) => {
+    mockMacOS();
+    const ctx = createCtx();
+    await handler(args, ctx);
+    expect(ctx.ui.notify.mock.calls).toEqual([[USAGE, "warning"]]);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });
